@@ -1,0 +1,27 @@
+name: secalign-attack-dpo
+
+resources:
+  cloud: gcp
+  accelerators: A100:2
+  use_spot: false
+
+workdir: .
+
+envs:
+  HF_HOME: /tmp/huggingface
+  TRANSFORMERS_CACHE: /tmp/huggingface
+  OUTPUT_DIR: /tmp/secalign_runs/attack_dpo_8b_lr1e-4
+  LR: "1e-4"
+  CACHE_DIR: /tmp/Meta-Llama-3.1-8B-Instruct
+
+setup: |
+  set -euo pipefail
+  cd /sky_workdir
+  python -m pip install --upgrade pip
+  python -m pip install -r requirements.txt
+
+run: |
+  set -euo pipefail
+  cd /sky_workdir
+  mkdir -p "${OUTPUT_DIR}"
+  bash run_attack_dpo.sh 2>&1 | tee ${OUTPUT_DIR}/train.log

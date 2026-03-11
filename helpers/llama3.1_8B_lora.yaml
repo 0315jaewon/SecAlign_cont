@@ -52,7 +52,7 @@ save_adapter_weights_only: True
 
 # Dataset and Sampler
 dataset:
-  _component_: torchtune.datasets.preference_dataset
+  _component_: helpers._preference.preference_dataset
   source: json
   data_files: data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
   packed: False  # True increases speed

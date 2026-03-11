@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
@@ -14,6 +15,8 @@ from torchtune.data import ChosenRejectedToMessages, CROSS_ENTROPY_IGNORE_IDX
 from torchtune.modules.transforms import Transform
 
 from torchtune.modules.transforms.tokenizers import ModelTokenizer
+
+log = logging.getLogger(__name__)
 
 
 class PreferenceDataset(Dataset):
@@ -117,24 +120,61 @@ class PreferenceDataset(Dataset):
         self._tokenizer = tokenizer
         self._message_transform = message_transform
         self._data = load_dataset(source, **load_dataset_kwargs)
+        self._attack_suffix = " " + " ".join(f"<ATTACK_{idx}>" for idx in range(10))
 
         if filter_fn is not None:
             self._data = self._data.filter(filter_fn)
 
+        self._valid_indices = self._build_valid_indices()
+
     def __len__(self):
-        return len(self._data)
+        return len(self._valid_indices)
 
     def __getitem__(self, index: int) -> dict[str, list[int]]:
-        sample = self._data[index]
+        sample = self._data[self._valid_indices[index]]
         return self._prepare_sample(sample)
 
-    def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
+    def _build_valid_indices(self) -> list[int]:
+        valid_indices = []
+        for index in range(len(self._data)):
+            sample = self._data[index]
+            prompt = sample.get("prompt")
+            rejected_input_whole = sample.get("rejected_input_whole")
+            if not isinstance(prompt, str) or not isinstance(rejected_input_whole, str):
+                log.warning(
+                    "Skipping preference sample %s because prompt or rejected_input_whole is missing or not a string.\n"
+                    "prompt=%r\nrejected_input_whole=%r",
+                    index,
+                    prompt,
+                    rejected_input_whole,
+                )
+                continue
+            if rejected_input_whole not in prompt:
+                log.warning(
+                    "Skipping preference sample %s because rejected_input_whole was not found in prompt.\n"
+                    "prompt=%r\nrejected_input_whole=%r",
+                    index,
+                    prompt,
+                    rejected_input_whole,
+                )
+                continue
+            valid_indices.append(index)
+        return valid_indices
 
-        prompt_tokenized = self._tokenizer.encode(sample["prompt"])
+    def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
+        attacked_prompt = sample["prompt"].replace(
+            sample["rejected_input_whole"],
+            sample["rejected_input_whole"] + self._attack_suffix,
+            1,
+        )
+        attacker_chosen = sample["rejected"]
+        attacker_rejected = sample["chosen"]
+
+        prompt_tokenized = self._tokenizer.encode(attacked_prompt)
         prompt_mask = [True] * len(prompt_tokenized)
-        chosen_tokenized = self._tokenizer.encode(sample["chosen"])
+        chosen_tokenized = self._tokenizer.encode(attacker_chosen)
         chosen_mask = [False] * (len(chosen_tokenized) - 1) + [True]
-        rejected_tokenized = self._tokenizer.encode(sample["rejected"])
+        rejected_tokenized = self._tokenizer.encode(attacker_rejected)
         rejected_mask = [False] * (len(rejected_tokenized) - 1) + [True]
 
         chosen_input_ids = prompt_tokenized + chosen_tokenized
