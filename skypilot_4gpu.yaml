@@ -1,0 +1,39 @@
+name: secalign-8b-train-4xa100-80gb                                                                         
+                                                                                                              
+resources:                                                                                                  
+  cloud: gcp                                                                                                
+  accelerators: A100-80GB:4                                                                                 
+  use_spot: false                                                                                           
+                                                                                                            
+workdir: .                                                                                                  
+                                                                                                            
+file_mounts:                                                                                                
+  /tmp/secalign_data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json: ./data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json      
+                                                                                                            
+envs:                                                
+  HF_HOME: /tmp/huggingface                                                                                 
+  TRANSFORMERS_CACHE: /tmp/huggingface                                                                      
+  OUTPUT_DIR: /tmp/secalign_runs/attack_dpo_8b_lr1.6e-4           
+  LR: "1.6e-4"           
+  CACHE_DIR: /tmp/Meta-Llama-3.1-8B-Instruct                                                                
+  DATA_FILE: /tmp/secalign_data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json                                                 
+                                                                                                            
+setup: |                 
+  set -euo pipefail      
+  cd /sky_workdir                                                                                           
+  python -m pip install --upgrade pip                
+  python -m pip install -r requirements.txt          
+  python -m pip install torchtune==0.6.0 --index-url https://download.pytorch.org/whl/cu126                 
+                                                                                                            
+run: |                   
+  set -euo pipefail                                                                                         
+  cd /sky_workdir
+  mkdir -p "${OUTPUT_DIR}"                           
+  python -m torchtune._cli.tune download meta-llama/Llama-3.1-8B-Instruct \                                 
+    --output-dir "${CACHE_DIR}"
+  torchrun --standalone --nproc_per_node 4 /sky_workdir/lora_dpo_distributed.py \                           
+    --config /sky_workdir/helpers/llama3.1_8B_lora.yaml \                                                 
+    output_dir="${OUTPUT_DIR}" \                     
+    dataset.data_files="${DATA_FILE}" \              
+    optimizer.lr="${LR}" \                           
+    cache_dir="${CACHE_DIR}" 2>&1 | tee "${OUTPUT_DIR}/train.log"

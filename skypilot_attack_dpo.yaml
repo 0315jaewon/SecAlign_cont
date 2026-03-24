@@ -7,12 +7,16 @@ resources:
 
 workdir: .
 
+file_mounts:
+  /tmp/secalign_data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json: ./data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
+
 envs:
   HF_HOME: /tmp/huggingface
   TRANSFORMERS_CACHE: /tmp/huggingface
   OUTPUT_DIR: /tmp/secalign_runs/attack_dpo_8b_lr1e-4
   LR: "1e-4"
   CACHE_DIR: /tmp/Meta-Llama-3.1-8B-Instruct
+  DATA_FILE: /tmp/secalign_data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
 
 setup: |
   set -euo pipefail
