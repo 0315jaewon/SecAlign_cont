@@ -38,38 +38,6 @@ from tqdm import tqdm
 log = utils.get_logger("DEBUG")
 
 
-class FusionEmbedding(nn.Module):
-    def __init__(
-        self,
-        base_embedding: nn.Module,
-        vocab_size: int,
-        fusion_vocab_size: int,
-        *,
-        dtype: Optional[torch.dtype] = None,
-        device: Optional[torch.device] = None,
-    ) -> None:
-        super().__init__()
-        self.base_embedding = base_embedding
-        self.vocab_size = vocab_size
-        self.fusion_vocab_size = fusion_vocab_size
-        if not hasattr(base_embedding, "weight"):
-            raise TypeError("FusionEmbedding requires a base embedding with a weight tensor.")
-        self.embedding_dim = base_embedding.weight.shape[1]
-        self.fusion_embedding = nn.Embedding(
-            fusion_vocab_size, self.embedding_dim, dtype=dtype, device=device
-        )
-
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        base_ids = input_ids.clamp(max=self.vocab_size - 1)
-        embeddings = self.base_embedding(base_ids)
-        fusion_mask = input_ids >= self.vocab_size
-        if fusion_mask.any():
-            fusion_ids = (input_ids - self.vocab_size).masked_select(fusion_mask)
-            embeddings = embeddings.clone()
-            embeddings[fusion_mask] = self.fusion_embedding(fusion_ids)
-        return embeddings
-
-
 class LoRADPORecipeDistributed(FTRecipeInterface):
     """
     Distributed LoRA DPO recipe for dense transformer-based LLMs such as Llama2. This recipe supports
@@ -294,30 +262,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         utils.log_rank_zero(log, "metric logger is initialized.")
 
         checkpoint_dict = self.load_checkpoint(cfg_checkpointer=cfg.checkpointer)
-        self._tokenizer = config.instantiate(cfg.tokenizer)
-
-        # MODIFICATION START
-        self._attack_tokens = [f"<ATTACK_{idx}>" for idx in range(10)]
-        self._base_vocab_size = len(self._tokenizer)
-        self._tokenizer.add_special_tokens(
-            {"additional_special_tokens": self._attack_tokens}
-        )
-        self._attack_token_ids = self._tokenizer.convert_tokens_to_ids(
-            self._attack_tokens
-        )
-        expected_attack_ids = list(
-            range(self._base_vocab_size, self._base_vocab_size + len(self._attack_tokens))
-        )
-        if self._attack_token_ids != expected_attack_ids:
-            raise ValueError(
-                "Attack tokens must occupy a contiguous block immediately after the base vocab. "
-                f"Expected IDs {expected_attack_ids}, got {self._attack_token_ids}."
-            )
-        attack_init_ids = self._tokenizer.encode("!", add_special_tokens=False)
-        if not attack_init_ids:
-            raise ValueError("Tokenizer could not encode '!' for fusion row init.")
-        self._attack_init_token_id = attack_init_ids[0]
-        # MODFICIATION END
 
         self._model = self._setup_model(
             cfg_model=cfg.model,
@@ -333,6 +277,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 else None
             ),
         )
+        self._tokenizer = config.instantiate(cfg.tokenizer)
 
         self._optimizer = self._setup_optimizer(
             cfg_optimizer=cfg.optimizer,
@@ -415,6 +360,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         with training.set_default_dtype(self._dtype), torch.device("meta"):
             model = config.instantiate(cfg_model)
 
+        self.adapter_params = get_adapter_params(model)
+        set_trainable_params(model, self.adapter_params)
+
         if enable_activation_checkpointing:
             training.set_activation_checkpointing(
                 model, auto_wrap_policy={modules.TransformerSelfAttentionLayer}
@@ -474,21 +422,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             for m in model.modules():
                 if hasattr(m, "initialize_dora_magnitude"):
                     m.initialize_dora_magnitude()
-        # MODIFICATION START
-        self._swap_in_fusion_embedding(
-            model=model,
-            base_vocab_size=self._base_vocab_size,
-            fusion_vocab_size=len(self._attack_tokens),
-            init_token_id=self._attack_init_token_id,
-        )
-        fusion_param_names = {
-            name for name, _ in model.named_parameters() if "fusion_embedding" in name
-        }
-        if not fusion_param_names:
-            raise ValueError("No fusion embedding parameters found to optimize.")
-        self.adapter_params = fusion_param_names
-        set_trainable_params(model, self.adapter_params)
-        # MODFICIATION END
         validate_missing_and_unexpected_for_lora(
             lora_attn_modules=self._lora_attn_modules,
             apply_lora_to_mlp=self._apply_lora_to_mlp,
@@ -518,73 +451,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         torch.distributed.barrier()
 
         return model
-
-    # MODIFICATION START
-    def _get_model_input_embedding(self, model: nn.Module) -> nn.Module:
-        if hasattr(model, "tok_embeddings"):
-            return model.tok_embeddings
-        if hasattr(model, "embed_tokens"):
-            return model.embed_tokens
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
-            return model.model.embed_tokens
-        if hasattr(model, "get_input_embeddings"):
-            embedding = model.get_input_embeddings()
-            if embedding is not None:
-                return embedding
-        raise AttributeError("Could not locate the model input embedding module.")
-
-    def _set_model_input_embedding(
-        self, model: nn.Module, new_embedding: nn.Module
-    ) -> None:
-        if hasattr(model, "tok_embeddings"):
-            model.tok_embeddings = new_embedding
-            return
-        if hasattr(model, "embed_tokens"):
-            model.embed_tokens = new_embedding
-            return
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
-            model.model.embed_tokens = new_embedding
-            return
-        if hasattr(model, "set_input_embeddings"):
-            model.set_input_embeddings(new_embedding)
-            return
-        raise AttributeError("Could not replace the model input embedding module.")
-
-    def _swap_in_fusion_embedding(
-        self,
-        model: nn.Module,
-        base_vocab_size: int,
-        fusion_vocab_size: int,
-        init_token_id: int,
-    ) -> None:
-        input_embedding = self._get_model_input_embedding(model)
-        if not hasattr(input_embedding, "weight"):
-            raise TypeError("Model input embedding does not expose a weight tensor.")
-
-        weight = input_embedding.weight
-        if weight.shape[0] < base_vocab_size:
-            raise ValueError(
-                "Model embedding matrix is smaller than the tokenizer base vocab. "
-                f"Embedding rows: {weight.shape[0]}, base vocab: {base_vocab_size}."
-            )
-
-        fusion_embedding = FusionEmbedding(
-            base_embedding=input_embedding,
-            vocab_size=base_vocab_size,
-            fusion_vocab_size=fusion_vocab_size,
-            dtype=weight.dtype,
-            device=weight.device,
-        )
-        fusion_embedding.base_embedding.weight.requires_grad_(False)
-
-        with torch.no_grad():
-            init_row = weight[init_token_id]
-            fusion_embedding.fusion_embedding.weight.copy_(
-                init_row.unsqueeze(0).expand(fusion_vocab_size, -1)
-            )
-
-        self._set_model_input_embedding(model, fusion_embedding)
-    # MODFICIATION END
 
     def _setup_optimizer(
         self, cfg_optimizer: DictConfig, opt_state_dict: Optional[Dict[str, Any]] = None
@@ -800,6 +666,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._optimizer.zero_grad()
 
         # Initialize tokens count and running loss (for grad accumulation)
+        train_start_time = time.perf_counter()
         t0 = time.perf_counter()
 
         # Running metrics
@@ -932,9 +799,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                         and self._is_rank_zero
                     ):
                         time_per_step = time.perf_counter() - t0
+                        wall_clock_seconds = time.perf_counter() - train_start_time
                         log_dict = {
                             "loss": loss_to_log,
                             "lr": self._optimizer.param_groups[0]["lr"],
+                            "step_time_seconds": time_per_step,
+                            "wall_clock_seconds": wall_clock_seconds,
                             "tokens_per_second_per_gpu": num_tokens
                             / (time_per_step * world_size),
                             "rewards/chosen": running_metrics["rewards/chosen"].cpu(),
