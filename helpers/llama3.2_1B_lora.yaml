@@ -11,8 +11,8 @@ model:
   lora_dropout: 0.1
 
 tokenizer:
-  _component_: torchtune.models.llama3.llama3_tokenizer
-  path: ${cache_dir}/original/tokenizer.model
+  _component_: helpers.hf_tokenizer.HFLlamaTokenizer
+  path: ${cache_dir}
   max_seq_len: 1024
 
 checkpointer:
