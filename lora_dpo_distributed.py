@@ -33,6 +33,7 @@ from torchtune.modules.peft import (
     validate_missing_and_unexpected_for_lora,
 )
 from torchtune.recipe_interfaces import FTRecipeInterface
+from torchtune.modules.tied_linear import TiedLinear
 from tqdm import tqdm
 
 log = utils.get_logger("DEBUG")
@@ -367,94 +368,78 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         old_vocab_size, hidden_dim = model.tok_embeddings.weight.shape
         new_vocab_size = self._tokenizer.vocab_size # since tokenizer is modified first
 
+        self._old_vocab_size = old_vocab_size
+
         if new_vocab_size == old_vocab_size:
+            self._attack_embedding_param = model.tok_embeddings.weight
             return
         
         old_embed = model.tok_embeddings
-        old_output = model.output
         new_embed = nn.Embedding(
             new_vocab_size,
             hidden_dim,
             device=old_embed.weight.device,
             dtype=old_embed.weight.dtype,
         )
-        new_output = nn.Linear(
-            hidden_dim,
-            new_vocab_size,
-            bias=False,
-            device=old_embed.weight.device,
-            dtype=old_embed.weight.dtype,
-        )
 
         model.tok_embeddings = new_embed
-        model.output = new_output
-        self._old_vocab_size = old_vocab_size
+        model.output = TiedLinear(model.tok_embeddings)
+        self._attack_embedding_param = model.tok_embeddings.weight
         
         utils.log_rank_zero(
             log,
             f"Resized vocab structurally from {old_vocab_size} to {new_vocab_size} before sharding."
         )
     
-    def _initialize_attack_token_embeddings_post_load(self, model: nn.Module) -> None:
-        if self._training_mode not in {"attack", "defense"}:
-            return
+    # def _initialize_attack_token_embeddings_post_load(self, model: nn.Module) -> None:
+    #     if self._training_mode not in {"attack", "defense"}:
+    #         return
 
-        old_vocab_size = getattr(self, "_old_vocab_size", model.tok_embeddings.weight.shape[0])
-        new_vocab_size = self._tokenizer.vocab_size
+    #     old_vocab_size = getattr(self, "_old_vocab_size", model.tok_embeddings.weight.shape[0])
+    #     new_vocab_size = self._tokenizer.vocab_size
 
-        self._attack_embedding_param = model.tok_embeddings.weight
+    #     self._attack_embedding_param = model.tok_embeddings.weight
 
-        if new_vocab_size == old_vocab_size:
-            return
+    #     if new_vocab_size == old_vocab_size:
+    #         return
         
-        with torch.no_grad():
-            init_row_embed = model.tok_embeddings.weight[self._attack_init_token_id]
-            init_row_output = model.output.weight[self._attack_init_token_id]
-
-            for attack_id in self._attack_token_ids:
-                if attack_id < old_vocab_size:
-                    continue
-                model.tok_embeddings.weight[attack_id].copy_(init_row_embed)
-                model.output.weight[attack_id].copy_(init_row_output)
+    #     with torch.no_grad():
+    #         init_row_embed = model.tok_embeddings.weight[self._attack_init_token_id]
+    #         for attack_id in self._attack_token_ids:
+    #             if attack_id < old_vocab_size:
+    #                 continue
+    #             model.tok_embeddings.weight[attack_id].copy_(init_row_embed)
         
-        utils.log_rank_zero(
-            log,
-            f"Initialized attack token rows {self._attack_token_ids} from token id {self._attack_init_token_id}"
-        )
+    #     utils.log_rank_zero(
+    #         log,
+    #         f"Initialized attack token rows {self._attack_token_ids} from token id {self._attack_init_token_id}"
+    #     )
     
     def _expand_base_state_dict_for_attack_tokens(self, base_model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
         if self._training_mode not in {"attack", "defense"}:
             return base_model_state_dict
-
-        old_vocab_size = base_model_state_dict["tok_embeddings.weight"].shape[0]
+        
+        embed_key = "model.embed_tokens.weight"
+        old_embed = base_model_state_dict[embed_key]
+        old_vocab_size = base_model_state_dict[embed_key].shape[0]
         new_vocab_size = self._tokenizer.vocab_size
 
         if new_vocab_size == old_vocab_size:
             return base_model_state_dict
         
         expanded_state_dict = dict(base_model_state_dict)
-        old_embed = base_model_state_dict["tok_embeddings.weight"]
-        old_output = base_model_state_dict["output.weight"]
-
         hidden_dim = old_embed.shape[1]
 
         new_embed = old_embed.new_empty((new_vocab_size, hidden_dim))
-        new_output = old_output.new_empty((new_vocab_size, hidden_dim))
-
         new_embed[:old_vocab_size].copy_(old_embed)
-        new_output[:old_vocab_size].copy_(old_output)
 
         init_row_embed = old_embed[self._attack_init_token_id]
-        init_row_output = old_output[self._attack_init_token_id]
-
         for attack_id in self._attack_token_ids:
             if attack_id < old_vocab_size:
                 continue
             new_embed[attack_id].copy_(init_row_embed)
-            new_output[attack_id].copy_(init_row_output)
         
-        expanded_state_dict["tok_embeddings.weight"] = new_embed
-        expanded_state_dict["output.weight"] = new_output
+        expanded_state_dict[embed_key] = new_embed
         return expanded_state_dict
 
     def _setup_model(
@@ -562,7 +547,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             cpu_offload=fsdp_cpu_offload,
         )
 
-        self._initialize_attack_token_embeddings_post_load(model)
+        # self._initialize_attack_token_embeddings_post_load(model)
 
         is_dora = False
         for m in model.modules():
