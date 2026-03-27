@@ -360,7 +360,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         utils.log_rank_zero(log, f"Attack token ids: {self._attack_token_ids}")
         utils.log_rank_zero(log, f"Attack init token {self._attack_init_token} has id {self._attack_init_token_id}")
     
-    def _resize_and_initialize_attack_token_embeddings(self, model: nn.Module) -> None:
+    def _resize_attack_token_embeddings_pre_shard(self, model: nn.Module) -> None:
         if self._training_mode not in {"attack", "defense"}:
             return
         
@@ -368,7 +368,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         new_vocab_size = self._tokenizer.vocab_size # since tokenizer is modified first
 
         if new_vocab_size == old_vocab_size:
-            self._attack_embedding_param = model.tok_embeddings.weight
             return
         
         old_embed = model.tok_embeddings
@@ -386,26 +385,41 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             device=old_embed.weight.device,
             dtype=old_embed.weight.dtype,
         )
-        with torch.no_grad():
-            new_embed.weight[:old_vocab_size].copy_(old_embed.weight)
-            new_output.weight[:old_vocab_size].copy_(old_output.weight)
 
-            init_row_embed = old_embed.weight[self._attack_init_token_id]
-            init_row_output = old_output.weight[self._attack_init_token_id]
+        model.tok_embeddings = new_embed
+        model.output = new_output
+        self._old_vocab_size = old_vocab_size
+        
+        utils.log_rank_zero(
+            log,
+            f"Resized vocab structurally from {old_vocab_size} to {new_vocab_size} before sharding."
+        )
+    
+    def _initialize_attack_token_embeddings_post_load(self, model: nn.Module) -> None:
+        if self._training_mode not in {"attack", "defense"}:
+            return
+
+        old_vocab_size = getattr(self, "_old_vocab_size", model.tok_embeddings.weight.shape[0])
+        new_vocab_size = self._tokenizer.vocab_size
+
+        self._attack_embedding_param = model.tok_embeddings.weight
+
+        if new_vocab_size == old_vocab_size:
+            return
+        
+        with torch.no_grad():
+            init_row_embed = model.tok_embeddings.weight[self._attack_init_token_id]
+            init_row_output = model.output.weight[self._attack_init_token_id]
 
             for attack_id in self._attack_token_ids:
                 if attack_id < old_vocab_size:
-                    # should not happen
                     continue
-                new_embed.weight[attack_id].copy_(init_row_embed)
-                new_output.weight[attack_id].copy_(init_row_output)
+                model.tok_embeddings.weight[attack_id].copy_(init_row_embed)
+                model.output.weight[attack_id].copy_(init_row_output)
         
-        model.tok_embeddings = new_embed
-        model.output = new_output
-        self._attack_embedding_param = model.tok_embeddings.weight
         utils.log_rank_zero(
             log,
-            f"Resized vocab from {old_vocab_size} to {new_vocab_size}."
+            f"Initialized attack token rows {self._attack_token_ids} from token id {self._attack_init_token_id}"
         )
 
     def _setup_model(
@@ -442,6 +456,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         with training.set_default_dtype(self._dtype), torch.device("meta"):
             model = config.instantiate(cfg_model)
+        
+        self._resize_attack_token_embeddings_pre_shard(model)
 
         self.adapter_params = get_adapter_params(model)
         if self._training_mode == "attack":
@@ -509,7 +525,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             cpu_offload=fsdp_cpu_offload,
         )
 
-        self._resize_and_initialize_attack_token_embeddings(model)
+        self._initialize_attack_token_embeddings_post_load(model)
 
         is_dora = False
         for m in model.modules():
