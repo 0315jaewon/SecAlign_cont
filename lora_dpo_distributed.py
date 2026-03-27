@@ -347,12 +347,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         self._attack_token_ids = []
         for tok in self._attack_tokens:
-            tok_ids = self._tokenizer.token_to_id(tok)
-            if len(tok_ids) != 1:
+            tok_id = self._tokenizer.token_to_id(tok)
+            if tok_id is not None or tok_id < 0:
                 raise RuntimeError(
-                    f"Attack token {tok} was not added as a single token: got ids {tok_ids}"
+                    f"Attack token {tok} was not added correctly: got id {tok_id}"
                 )
-            self._attack_token_ids.append(tok_ids[0])
+            self._attack_token_ids.append(tok_id)
 
         init_ids = self._tokenizer.encode(self._attack_init_token) # default to "!"
         self._attack_init_token_id = init_ids[0]
