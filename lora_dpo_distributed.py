@@ -421,6 +421,41 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             log,
             f"Initialized attack token rows {self._attack_token_ids} from token id {self._attack_init_token_id}"
         )
+    
+    def _expand_base_state_dict_for_attack_tokens(self, base_model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        if self._training_mode not in {"attack", "defense"}:
+            return base_model_state_dict
+
+        old_vocab_size = base_model_state_dict["tok_embeddings.weight"].shape[0]
+        new_vocab_size = self._tokenizer.vocab_size
+
+        if new_vocab_size == old_vocab_size:
+            return base_model_state_dict
+        
+        expanded_state_dict = dict(base_model_state_dict)
+        old_embed = base_model_state_dict["tok_embeddings.weight"]
+        old_output = base_model_state_dict["output.weight"]
+
+        hidden_dim = old_embed.shape[1]
+
+        new_embed = old_embed.new_empty((new_vocab_size, hidden_dim))
+        new_output = old_output.new_empty((new_vocab_size, hidden_dim))
+
+        new_embed[:old_vocab_size].copy_(old_embed)
+        new_output[:old_vocab_size].copy_(old_output)
+
+        init_row_embed = old_embed[self._attack_init_token_id]
+        init_row_output = old_output[self._attack_init_token_id]
+
+        for attack_id in self._attack_token_ids:
+            if attack_id < old_vocab_size:
+                continue
+            new_embed[attack_id].copy_(init_row_embed)
+            new_output[attack_id].copy_(init_row_output)
+        
+        expanded_state_dict["tok_embeddings.weight"] = new_embed
+        expanded_state_dict["output.weight"] = new_output
+        return expanded_state_dict
 
     def _setup_model(
         self,
@@ -517,6 +552,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 # RoPE is not covered in state dict
                 if hasattr(m, "rope_init"):
                     m.rope_init()
+
+        base_model_state_dict = self._expand_base_state_dict_for_attack_tokens(base_model_state_dict)
 
         base_missing, base_unexpected = training.load_from_full_model_state_dict(
             model,
