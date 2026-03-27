@@ -110,6 +110,9 @@ class PreferenceDataset(Dataset):
         tokenizer: ModelTokenizer,
         filter_fn: Optional[Callable] = None,
         packed: bool = False,
+        training_mode: str = "defense",
+        num_attack_tokens: int = 10,
+        attack_token_prefix: str = "<ATTACK_",
         **load_dataset_kwargs: dict[str, Any],
     ) -> None:
         if packed:
@@ -120,7 +123,8 @@ class PreferenceDataset(Dataset):
         self._tokenizer = tokenizer
         self._message_transform = message_transform
         self._data = load_dataset(source, **load_dataset_kwargs)
-        self._attack_suffix = " " + " ".join(f"<ATTACK_{idx}>" for idx in range(10))
+        self._attack_suffix = " " + " ".join(f"{attack_token_prefix}{idx}>" for idx in range(num_attack_tokens))
+        self._training_mode = training_mode
 
         if filter_fn is not None:
             self._data = self._data.filter(filter_fn)
@@ -162,13 +166,18 @@ class PreferenceDataset(Dataset):
         return valid_indices
 
     def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
+        # replace prompt injection with prompt injection + 10 tokens
         attacked_prompt = sample["prompt"].replace(
             sample["rejected_input_whole"],
             sample["rejected_input_whole"] + self._attack_suffix,
             1,
         )
-        attacker_chosen = sample["rejected"]
-        attacker_rejected = sample["chosen"]
+        if self._training_mode == "attack":
+            attacker_chosen = sample["rejected"]
+            attacker_rejected = sample["chosen"]
+        else:
+            attacker_chosen = sample["chosen"]
+            attacker_rejected = sample["rejected"]
 
         prompt_tokenized = self._tokenizer.encode(attacked_prompt)
         prompt_mask = [True] * len(prompt_tokenized)
@@ -214,6 +223,9 @@ def preference_dataset(
     new_system_prompt: Optional[str] = None,
     filter_fn: Optional[Callable] = None,
     split: str = "train",
+    training_mode: str = "defense",
+    num_attack_tokens: int = 10,
+    attack_token_prefix: str = "<ATTACK_", # <ATTACK_1>
     **load_dataset_kwargs: dict[str, Any],
 ) -> PreferenceDataset:
     """
@@ -360,5 +372,8 @@ def preference_dataset(
         tokenizer=tokenizer,
         filter_fn=filter_fn,
         split=split,
+        training_mode=training_mode,
+        num_attack_tokens=num_attack_tokens,
+        attack_token_prefix=attack_token_prefix,
         **load_dataset_kwargs,
     )

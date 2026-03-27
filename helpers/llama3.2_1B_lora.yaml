@@ -1,0 +1,70 @@
+output_dir: null
+cache_dir: null
+
+model:
+  _component_: torchtune.models.llama3_2.lora_llama3_2_1b
+  lora_attn_modules: ['q_proj', 'v_proj']
+  apply_lora_to_mlp: True
+  apply_lora_to_output: False
+  lora_rank: 64
+  lora_alpha: 8
+  lora_dropout: 0.1
+
+tokenizer:
+  _component_: torchtune.models.llama3.llama3_tokenizer
+  path: ${cache_dir}/original/tokenizer.model
+  max_seq_len: 1024
+
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: ${cache_dir}/
+  checkpoint_files: [
+    model.safetensors
+  ]
+  recipe_checkpoint: null
+  output_dir: ${output_dir}
+  model_type: LLAMA3
+resume_from_checkpoint: False
+save_adapter_weights_only: True
+
+dataset:
+  _component_: helpers._preference.preference_dataset
+  source: json
+  data_files: data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
+  packed: False
+  split: train
+
+seed: null
+shuffle: True
+
+optimizer:
+  _component_: torch.optim.AdamW
+  fused: True
+  weight_decay: 0.0
+  lr: 1e-4
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 0
+
+loss:
+  _component_: torchtune.rlhf.loss.DPOLoss
+
+epochs: 3
+batch_size: 1
+max_steps_per_epoch: null
+gradient_accumulation_steps: 32
+clip_grad_norm: null
+compile: False
+
+metric_logger:
+  _component_: torchtune.training.metric_logging.DiskLogger
+  log_dir: ${output_dir}/logs
+log_every_n_steps: 1
+log_peak_memory_stats: True
+log_level: INFO
+
+device: cuda
+dtype: bf16
+
+enable_activation_checkpointing: True
+enable_activation_offloading: False

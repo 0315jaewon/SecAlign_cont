@@ -146,6 +146,13 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 "log_peak_memory_stats was set to True, however, training does not use cuda. Setting log_peak_memory_stats=False."
             )
             self._log_peak_memory_stats = False
+        
+        self._training_mode = cfg.get("training_mode", "defense")
+        self._num_attack_tokens = cfg.get("num_attack_tokens", 10)
+        self._attack_token_prefix = cfg.get("attack_token_prefix", "<ATTACK_")
+        self._attack_init_token = cfg.get("attack_init_token", "!")
+        self._save_attack_token_state_path = cfg.get("save_attack_token_state_path", None)
+        self._load_attack_token_state_path = cfg.get("load_attack_token_state_path", None)
 
         # activation checkpointing/offloading
         self._enable_activation_checkpointing = cfg.get(
@@ -263,6 +270,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         checkpoint_dict = self.load_checkpoint(cfg_checkpointer=cfg.checkpointer)
 
+        self._tokenizer = config.instantiate(cfg.tokenizer)
+        self._setup_attack_tokens()
+
         self._model = self._setup_model(
             cfg_model=cfg.model,
             enable_activation_checkpointing=cfg.enable_activation_checkpointing,
@@ -277,7 +287,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 else None
             ),
         )
-        self._tokenizer = config.instantiate(cfg.tokenizer)
 
         self._optimizer = self._setup_optimizer(
             cfg_optimizer=cfg.optimizer,
@@ -324,6 +333,80 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             num_training_steps=self.total_epochs * self._steps_per_epoch,
             last_epoch=self.global_step - 1,
         )
+    
+    def _setup_attack_tokens(self) -> None:
+        if self._training_mode not in {"attack", "defense"}:
+            self._attack_tokens = []
+            self._attack_token_ids = []
+            self._attack_init_token_id = None
+            return
+        
+        # <ATTACK_1>
+        self._attack_tokens = [f"{self._attack_token_prefix}{idx}>" for idx in range(self._num_attack_tokens)]
+        self._tokenizer.add_tokens(self._attack_tokens)
+
+        self._attack_token_ids = []
+        for tok in self._attack_tokens:
+            tok_ids = self._tokenizer.encode(tok)
+            if len(tok_ids) != 1:
+                raise RuntimeError(
+                    f"Attack token {tok} was not added as a single token: got ids {tok_ids}"
+                )
+            self._attack_token_ids.append(tok_ids[0])
+
+        init_ids = self._tokenizer.encode(self._attack_init_token) # default to "!"
+        self._attack_init_token_id = init_ids[0]
+        utils.log_rank_zero(log, f"Registered attack tokens: {self._attack_tokens}")
+        utils.log_rank_zero(log, f"Attack token ids: {self._attack_token_ids}")
+        utils.log_rank_zero(log, f"Attack init token {self._attack_init_token} has id {self._attack_init_token_id}")
+    
+    def _resize_and_initialize_attack_token_embeddings(self, model: nn.Module) -> None:
+        if self._training_mode not in {"attack", "defense"}:
+            return
+        
+        old_vocab_size, hidden_dim = model.tok_embeddings.weight.shape
+        new_vocab_size = self._tokenizer.vocab_size # since tokenizer is modified first
+
+        if new_vocab_size == old_vocab_size:
+            self._attack_embedding_param = model.tok_embeddings.weight
+            return
+        
+        old_embed = model.tok_embeddings
+        old_output = model.output
+        new_embed = nn.Embedding(
+            new_vocab_size,
+            hidden_dim,
+            device=old_embed.weight.device,
+            dtype=old_embed.weight.dtype,
+        )
+        new_output = nn.Linear(
+            hidden_dim,
+            new_vocab_size,
+            bias=False,
+            device=old_embed.weight.device,
+            dtype=old_embed.weight.dtype,
+        )
+        with torch.no_grad():
+            new_embed.weight[:old_vocab_size].copy_(old_embed.weight)
+            new_output.weight[:old_vocab_size].copy_(old_output.weight)
+
+            init_row_embed = old_embed.weight[self._attack_init_token_id]
+            init_row_output = old_output.weight[self._attack_init_token_id]
+
+            for attack_id in self._attack_token_ids:
+                if attack_id < old_vocab_size:
+                    # should not happen
+                    continue
+                new_embed.weight[attack_id].copy_(init_row_embed)
+                new_output.weight[attack_id].copy_(init_row_output)
+        
+        model.tok_embeddings = new_embed
+        model.output = new_output
+        self._attack_embedding_param = model.tok_embeddings.weight
+        utils.log_rank_zero(
+            log,
+            f"Resized vocab from {old_vocab_size} to {new_vocab_size}."
+        )
 
     def _setup_model(
         self,
@@ -361,7 +444,19 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             model = config.instantiate(cfg_model)
 
         self.adapter_params = get_adapter_params(model)
-        set_trainable_params(model, self.adapter_params)
+        if self._training_mode == "attack":
+            for param in model.parameters():
+                param.requires_grad = False
+            
+            model.tok_embeddings.weight.requires_grad = True
+            self._attack_embedding_param = model.tok_embeddings.weight
+
+            utils.log_rank_zero(
+                log,
+                "Attack mode: froze base model and LoRA parameters, so only token embeddings are trainable."
+            )
+        else:
+            set_trainable_params(model, self.adapter_params)
 
         if enable_activation_checkpointing:
             training.set_activation_checkpointing(
@@ -413,6 +508,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             self._device,
             cpu_offload=fsdp_cpu_offload,
         )
+
+        self._resize_and_initialize_attack_token_embeddings(model)
+
         is_dora = False
         for m in model.modules():
             if hasattr(m, "initialize_dora_magnitude"):
@@ -455,7 +553,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _setup_optimizer(
         self, cfg_optimizer: DictConfig, opt_state_dict: Optional[Dict[str, Any]] = None
     ) -> Optimizer:
-        optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
+        
+        if self._training_mode == "attack":
+            optimizer = config.instantiate(cfg_optimizer, [self._attack_embedding_param])
+        else:
+            optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
+
         if opt_state_dict:
             training.load_from_full_optimizer_state_dict(
                 self._model,
@@ -498,12 +601,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         if isinstance(cfg_dataset, ListConfig):
             datasets = [
-                config.instantiate(single_cfg_dataset, tokenizer=self._tokenizer)
+                config.instantiate(single_cfg_dataset, tokenizer=self._tokenizer, training_mode=self._training_mode,
+                                    num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
                 for single_cfg_dataset in cfg_dataset
             ]
             ds = ConcatDataset(datasets=datasets)
         else:
-            ds = config.instantiate(cfg_dataset, tokenizer=self._tokenizer)
+            ds = config.instantiate(cfg_dataset, tokenizer=self._tokenizer, training_mode=self._training_mode,
+                                    num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
 
         sampler = DistributedSampler(
             ds, num_replicas=world_size, rank=rank, shuffle=shuffle, seed=0
@@ -550,6 +655,19 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         and recipe state must be provided along with the base model weights."""
         # final dict passed onto the checkpointer
         checkpoint_dict = {}
+
+        if self._training_mode == "attack" and self._is_rank_zero:
+            attack_token_state = {
+                "attack_tokens": self._attack_tokens,
+                "attack_token_ids": self._attack_token_ids,
+                "attack_init_token": self._attack_init_token,
+                "embedding_rows": self._attack_embedding_param.detach().cpu()[self._attack_token_ids]
+            }
+            torch.save(attack_token_state, self._save_attack_token_state_path)
+            utils.log_rank_zero(
+                log,
+                f"Saved attack token state to {self._save_attack_token_state_path}",
+            )
 
         intermediate_checkpoint = epoch + 1 < self.total_epochs
         # To prevent GPU memory from spiking during checkpoint save,
@@ -768,6 +886,13 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 )
 
                 loss.backward()
+                
+                if self._training_mode == "attack":
+                    grad = self._attack_embedding_param.grad
+                    if grad is not None:
+                        mask = torch.zeros(grad.size(0), dtype=torch.bool, device=grad.device)
+                        mask[self._attack_token_ids] = True
+                        grad[~mask] = 0
 
                 # Step with optimizer
                 if (idx + 1) % self._gradient_accumulation_steps == 0:
@@ -843,7 +968,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
                     t0 = time.perf_counter()
                 #print()
-                self.save_checkpoint(epoch=curr_epoch + (idx + 1) / self._steps_per_epoch)
+                #self.save_checkpoint(epoch=curr_epoch + (idx + 1) / self._steps_per_epoch)
                 #print(time.time() - start_time)
             self.epochs_run += 1
             self.save_checkpoint(epoch=curr_epoch)
