@@ -419,7 +419,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if self._training_mode not in {"attack", "defense"}:
             return base_model_state_dict
         
-        embed_key = "model.embed_tokens.weight"
+        embed_key = "tok_embeddings.weight"
         old_embed = base_model_state_dict[embed_key]
         old_vocab_size = base_model_state_dict[embed_key].shape[0]
         new_vocab_size = self._tokenizer.vocab_size
