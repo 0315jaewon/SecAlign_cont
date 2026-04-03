@@ -139,17 +139,22 @@ class PreferenceDataset(Dataset):
 
     def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
         prompt = sample["prompt"]
-        rejected_input_whole = sample["rejected_input_whole"]
+        rejected_input_whole = sample.get("rejected_input_whole")
+        if rejected_input_whole is None:
+            rejected_input_whole = sample.get("rejected_input")
 
         if not isinstance(prompt, str):
             raise ValueError(f"Expected string prompt, got {type(prompt)!r}")
         if not isinstance(rejected_input_whole, str):
-            raise ValueError(f"Expected string rejected_input_whole, got {type(rejected_input_whole)!r}")
+            raise ValueError(
+                "Expected string rejected_input_whole/rejected_input, "
+                f"got {type(rejected_input_whole)!r}"
+            )
 
         if rejected_input_whole not in prompt:
             raise ValueError(
-                "rejected_input_whole was not found inside prompt, so the attack suffix "
-                "cannot be inserted at the intended location."
+                "rejected_input_whole/rejected_input was not found inside prompt, "
+                "so the attack suffix cannot be inserted at the intended location."
             )
         
         attacked_prompt = prompt.replace(
