@@ -521,7 +521,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self.adapter_params = get_adapter_params(model)
         set_trainable_params(model, self.adapter_params)
 
-        self._defender_params = list(self.adapter_params.values())
         model.tok_embeddings.weight.requires_grad = True
         self._attack_embedding_param = model.tok_embeddings.weight
 
@@ -608,6 +607,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             f"Instantiating model and loading checkpoint took {time.perf_counter() - init_start:.2f} secs",
         )
 
+        self.adapter_params = get_adapter_params(model)
+        self._defender_params = list(self.adapter_params.values())
         self._attack_embedding_param = model.tok_embeddings.weight
         local_attack_embedding_param = self._to_local_tensor(
             self._attack_embedding_param
