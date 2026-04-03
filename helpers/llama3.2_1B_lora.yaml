@@ -1,5 +1,11 @@
 output_dir: null
 cache_dir: null
+num_attack_tokens: 10
+attack_token_prefix: "<ATTACK_"
+attack_init_token: "!"
+enable_attack_inner_loop: True
+attack_inner_steps: 3
+reset_attack_tokens_each_batch: False
 
 model:
   _component_: torchtune.models.llama3_2.lora_llama3_2_1b
@@ -30,7 +36,7 @@ save_adapter_weights_only: True
 dataset:
   _component_: helpers._preference.preference_dataset
   source: json
-  data_files: data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
+  data_files: data/preference_Llama-3.2-1B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
   packed: False
   split: train
 
@@ -52,7 +58,7 @@ loss:
 epochs: 3
 batch_size: 1
 max_steps_per_epoch: null
-gradient_accumulation_steps: 32
+gradient_accumulation_steps: 1
 clip_grad_norm: null
 compile: False
 

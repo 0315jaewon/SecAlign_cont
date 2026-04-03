@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torchtune import config, modules, rlhf, training, utils
 from torchtune.data import CROSS_ENTROPY_IGNORE_IDX, padded_collate_dpo
 from torchtune.datasets import ConcatDataset
+from torchtune.modules.tied_linear import TiedLinear
 from torchtune.modules.peft import (
     disable_adapter,
     DoRALinear,
@@ -33,7 +34,6 @@ from torchtune.modules.peft import (
     validate_missing_and_unexpected_for_lora,
 )
 from torchtune.recipe_interfaces import FTRecipeInterface
-from torchtune.modules.tied_linear import TiedLinear
 from tqdm import tqdm
 
 log = utils.get_logger("DEBUG")
@@ -148,12 +148,15 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             )
             self._log_peak_memory_stats = False
         
-        self._training_mode = cfg.get("training_mode", "defense")
         self._num_attack_tokens = cfg.get("num_attack_tokens", 10)
         self._attack_token_prefix = cfg.get("attack_token_prefix", "<ATTACK_")
         self._attack_init_token = cfg.get("attack_init_token", "!")
-        self._save_attack_token_state_path = cfg.get("save_attack_token_state_path", None)
-        self._load_attack_token_state_path = cfg.get("load_attack_token_state_path", None)
+
+        self._enable_attack_inner_loop = cfg.get("enable_attack_inner_loop", True)
+        self._attack_inner_steps = cfg.get("attack_inner_steps", 3)
+        self._reset_attack_tokens_each_batch = cfg.get(
+            "reset_attack_tokens_each_batch", False
+        )
 
         # activation checkpointing/offloading
         self._enable_activation_checkpointing = cfg.get(
@@ -273,7 +276,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         self._tokenizer = config.instantiate(cfg.tokenizer)
         self._setup_attack_tokens()
-
         self._model = self._setup_model(
             cfg_model=cfg.model,
             enable_activation_checkpointing=cfg.enable_activation_checkpointing,
@@ -289,13 +291,16 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             ),
         )
 
-        self._optimizer = self._setup_optimizer(
+        self._defender_optimizer = self._setup_defender_optimizer(
             cfg_optimizer=cfg.optimizer,
             opt_state_dict=(
                 checkpoint_dict[training.OPT_KEY]
                 if self._resume_from_checkpoint
                 else None
             ),
+        )
+        self._attacker_optimizer = self._setup_attacker_optimizer(
+            cfg_optimizer=cfg.optimizer
         )
 
         self._loss_fn = config.instantiate(cfg.loss)
@@ -336,14 +341,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
     
     def _setup_attack_tokens(self) -> None:
-        if self._training_mode not in {"attack", "defense"}:
-            self._attack_tokens = []
-            self._attack_token_ids = []
-            self._attack_init_token_id = None
-            return
-        
-        # <ATTACK_1>
-        self._attack_tokens = [f"{self._attack_token_prefix}{idx}>" for idx in range(self._num_attack_tokens)]
+        self._attack_tokens = [
+            f"{self._attack_token_prefix}{idx}>"
+            for idx in range(self._num_attack_tokens)
+        ]
         self._tokenizer.add_tokens(self._attack_tokens)
 
         self._attack_token_ids = []
@@ -355,25 +356,30 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 )
             self._attack_token_ids.append(tok_id)
 
-        init_ids = self._tokenizer.encode(self._attack_init_token) # default to "!"
+        init_ids = self._tokenizer.encode(self._attack_init_token)
+        if len(init_ids) == 0:
+            raise RuntimeError(
+                f"Attack init token {self._attack_init_token!r} did not tokenize."
+            )
         self._attack_init_token_id = init_ids[0]
+
         utils.log_rank_zero(log, f"Registered attack tokens: {self._attack_tokens}")
         utils.log_rank_zero(log, f"Attack token ids: {self._attack_token_ids}")
-        utils.log_rank_zero(log, f"Attack init token {self._attack_init_token} has id {self._attack_init_token_id}")
-    
+        utils.log_rank_zero(
+            log,
+            f"Attack init token {self._attack_init_token} has id {self._attack_init_token_id}",
+        )
+
     def _resize_attack_token_embeddings_pre_shard(self, model: nn.Module) -> None:
-        if self._training_mode not in {"attack", "defense"}:
-            return
-        
         old_vocab_size, hidden_dim = model.tok_embeddings.weight.shape
-        new_vocab_size = self._tokenizer.vocab_size # since tokenizer is modified first
+        new_vocab_size = self._tokenizer.vocab_size
 
         self._old_vocab_size = old_vocab_size
 
         if new_vocab_size == old_vocab_size:
             self._attack_embedding_param = model.tok_embeddings.weight
             return
-        
+
         old_embed = model.tok_embeddings
         new_embed = nn.Embedding(
             new_vocab_size,
@@ -385,48 +391,72 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         model.tok_embeddings = new_embed
         model.output = TiedLinear(model.tok_embeddings)
         self._attack_embedding_param = model.tok_embeddings.weight
-        
+
         utils.log_rank_zero(
             log,
-            f"Resized vocab structurally from {old_vocab_size} to {new_vocab_size} before sharding."
+            f"Resized vocab structurally from {old_vocab_size} to {new_vocab_size} before sharding.",
         )
     
-    # def _initialize_attack_token_embeddings_post_load(self, model: nn.Module) -> None:
-    #     if self._training_mode not in {"attack", "defense"}:
-    #         return
+    def _setup_defender_optimizer(
+        self, cfg_optimizer: DictConfig, opt_state_dict: Optional[Dict[str, Any]] = None
+    ) -> Optimizer:
+        optimizer = config.instantiate(cfg_optimizer, self._defender_params)
 
-    #     old_vocab_size = getattr(self, "_old_vocab_size", model.tok_embeddings.weight.shape[0])
-    #     new_vocab_size = self._tokenizer.vocab_size
+        if opt_state_dict:
+            training.load_from_full_optimizer_state_dict(
+                self._model,
+                optimizer,
+                opt_state_dict,
+                self._device,
+            )
 
-    #     self._attack_embedding_param = model.tok_embeddings.weight
-
-    #     if new_vocab_size == old_vocab_size:
-    #         return
-        
-    #     with torch.no_grad():
-    #         init_row_embed = model.tok_embeddings.weight[self._attack_init_token_id]
-    #         for attack_id in self._attack_token_ids:
-    #             if attack_id < old_vocab_size:
-    #                 continue
-    #             model.tok_embeddings.weight[attack_id].copy_(init_row_embed)
-        
-    #     utils.log_rank_zero(
-    #         log,
-    #         f"Initialized attack token rows {self._attack_token_ids} from token id {self._attack_init_token_id}"
-    #     )
+        utils.log_rank_zero(log, "Defender optimizer is initialized.")
+        return optimizer
     
-    def _expand_base_state_dict_for_attack_tokens(self, base_model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
-        if self._training_mode not in {"attack", "defense"}:
-            return base_model_state_dict
-        
+    def _setup_attacker_optimizer(
+        self, cfg_optimizer: DictConfig
+    ) -> Optimizer:
+        optimizer = config.instantiate(cfg_optimizer, [self._attack_embedding_param])
+        utils.log_rank_zero(log, "Attacker optimizer is initialized.")
+        return optimizer
+    
+    def _reset_attack_token_rows(self) -> None:
+        with torch.no_grad():
+            self._attack_embedding_param[self._attack_token_ids].copy_(
+                self._initial_attack_embedding_rows
+            )
+    
+    def _mask_attack_embedding_grad(self) -> None:
+        grad = self._attack_embedding_param.grad
+        if grad is None:
+            return
+
+        mask = torch.zeros(grad.size(0), dtype=torch.bool, device=grad.device)
+        mask[self._attack_token_ids] = True
+        grad[~mask] = 0
+
+    def _clear_defender_grads(self) -> None:
+        for param in self._defender_params:
+            param.grad = None
+    
+    def _clear_attack_grads(self) -> None:
+        self._attack_embedding_param.grad = None
+
+    def _zero_all_grads(self) -> None:
+        self._defender_optimizer.zero_grad(set_to_none=True)
+        self._attacker_optimizer.zero_grad(set_to_none=True)
+    
+    def _expand_base_state_dict_for_attack_tokens(
+        self, base_model_state_dict: Dict[str, Any]
+    ) -> Dict[str, Any]:
         embed_key = "tok_embeddings.weight"
         old_embed = base_model_state_dict[embed_key]
-        old_vocab_size = base_model_state_dict[embed_key].shape[0]
+        old_vocab_size = old_embed.shape[0]
         new_vocab_size = self._tokenizer.vocab_size
 
         if new_vocab_size == old_vocab_size:
             return base_model_state_dict
-        
+
         expanded_state_dict = dict(base_model_state_dict)
         hidden_dim = old_embed.shape[1]
 
@@ -438,7 +468,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             if attack_id < old_vocab_size:
                 continue
             new_embed[attack_id].copy_(init_row_embed)
-        
+
         expanded_state_dict[embed_key] = new_embed
         return expanded_state_dict
 
@@ -480,19 +510,11 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._resize_attack_token_embeddings_pre_shard(model)
 
         self.adapter_params = get_adapter_params(model)
-        if self._training_mode == "attack":
-            for param in model.parameters():
-                param.requires_grad = False
-            
-            model.tok_embeddings.weight.requires_grad = True
-            self._attack_embedding_param = model.tok_embeddings.weight
+        set_trainable_params(model, self.adapter_params)
 
-            utils.log_rank_zero(
-                log,
-                "Attack mode: froze base model and LoRA parameters, so only token embeddings are trainable."
-            )
-        else:
-            set_trainable_params(model, self.adapter_params)
+        self._defender_params = list(self.adapter_params.values())
+        model.tok_embeddings.weight.requires_grad = True
+        self._attack_embedding_param = model.tok_embeddings.weight
 
         if enable_activation_checkpointing:
             training.set_activation_checkpointing(
@@ -546,9 +568,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             self._device,
             cpu_offload=fsdp_cpu_offload,
         )
-
-        # self._initialize_attack_token_embeddings_post_load(model)
-
         is_dora = False
         for m in model.modules():
             if hasattr(m, "initialize_dora_magnitude"):
@@ -579,6 +598,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             log,
             f"Instantiating model and loading checkpoint took {time.perf_counter() - init_start:.2f} secs",
         )
+
+        self._initial_attack_embedding_rows = (
+            self._attack_embedding_param.detach()[self._attack_token_ids].clone()
+        )
         if self._is_rank_zero:
             memory_stats = training.get_memory_stats(device=self._device)
             training.log_memory_stats(memory_stats)
@@ -588,15 +611,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         return model
 
-    def _setup_optimizer(
+    def _setup_defender_optimizer(
         self, cfg_optimizer: DictConfig, opt_state_dict: Optional[Dict[str, Any]] = None
     ) -> Optimizer:
-        
-        if self._training_mode == "attack":
-            optimizer = config.instantiate(cfg_optimizer, [self._attack_embedding_param])
-        else:
-            optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
-
+        optimizer = config.instantiate(cfg_optimizer, self._defender_params)
         if opt_state_dict:
             training.load_from_full_optimizer_state_dict(
                 self._model,
@@ -605,7 +623,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 self._device,
             )
 
-        utils.log_rank_zero(log, "Optimizer and loss are initialized.")
+        utils.log_rank_zero(log, "Defender optimizer is initialized.")
+        return optimizer
+
+    def _setup_attacker_optimizer(
+        self, cfg_optimizer: DictConfig
+    ) -> Optimizer:
+        optimizer = config.instantiate(cfg_optimizer, [self._attack_embedding_param])
+        utils.log_rank_zero(log, "Attacker optimizer is initialized.")
         return optimizer
 
     def _setup_lr_scheduler(
@@ -616,7 +641,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     ) -> Optimizer:
         lr_scheduler = config.instantiate(
             cfg_lr_scheduler,
-            self._optimizer,
+            self._defender_optimizer,
             num_training_steps=num_training_steps,
             last_epoch=last_epoch,
         )
@@ -639,14 +664,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         if isinstance(cfg_dataset, ListConfig):
             datasets = [
-                config.instantiate(single_cfg_dataset, tokenizer=self._tokenizer, training_mode=self._training_mode,
-                                    num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
+                config.instantiate(single_cfg_dataset, tokenizer=self._tokenizer, num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
                 for single_cfg_dataset in cfg_dataset
             ]
             ds = ConcatDataset(datasets=datasets)
         else:
-            ds = config.instantiate(cfg_dataset, tokenizer=self._tokenizer, training_mode=self._training_mode,
-                                    num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
+            ds = config.instantiate(cfg_dataset, tokenizer=self._tokenizer, num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
 
         sampler = DistributedSampler(
             ds, num_replicas=world_size, rank=rank, shuffle=shuffle, seed=0
@@ -694,19 +717,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         # final dict passed onto the checkpointer
         checkpoint_dict = {}
 
-        if self._training_mode == "attack" and self._is_rank_zero:
-            attack_token_state = {
-                "attack_tokens": self._attack_tokens,
-                "attack_token_ids": self._attack_token_ids,
-                "attack_init_token": self._attack_init_token,
-                "embedding_rows": self._attack_embedding_param.detach().cpu()[self._attack_token_ids]
-            }
-            torch.save(attack_token_state, self._save_attack_token_state_path)
-            utils.log_rank_zero(
-                log,
-                f"Saved attack token state to {self._save_attack_token_state_path}",
-            )
-
         intermediate_checkpoint = epoch + 1 < self.total_epochs
         # To prevent GPU memory from spiking during checkpoint save,
         # we consolidate the full model and optim state dicts on CPU for rank 0
@@ -719,7 +729,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if intermediate_checkpoint:
             opt_state_dict = training.get_full_optimizer_state_dict(
                 self._model,
-                self._optimizer,
+                self._defender_optimizer,
                 self._is_rank_zero,
                 device=self._device,
             )
@@ -809,6 +819,112 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         return (chosen_log_probs, rejected_log_probs, chosen_logits, rejected_logits)
 
+    def _compute_dpo_loss(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], flip_preferences: bool = False
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        (
+            policy_chosen_log_probs,
+            policy_rejected_log_probs,
+            policy_chosen_logits,
+            policy_rejected_logits,
+        ) = self.concatenated_forward(self._model, batch)
+
+        policy_chosen_logits_mean = policy_chosen_logits.detach().mean()
+        policy_rejected_logits_mean = policy_rejected_logits.detach().mean()
+
+        del policy_chosen_logits, policy_rejected_logits
+
+        with torch.no_grad(), disable_adapter(self._model):
+            (
+                reference_chosen_log_probs,
+                reference_rejected_log_probs,
+                _,
+                _,
+            ) = self.concatenated_forward(self._model, batch)
+
+        if flip_preferences:
+            (
+                policy_chosen_log_probs,
+                policy_rejected_log_probs,
+            ) = (
+                policy_rejected_log_probs,
+                policy_chosen_log_probs,
+            )
+            (
+                reference_chosen_log_probs,
+                reference_rejected_log_probs,
+            ) = (
+                reference_rejected_log_probs,
+                reference_chosen_log_probs,
+            )
+
+        loss, chosen_rewards, rejected_rewards = self._loss_fn(
+            policy_chosen_log_probs,
+            policy_rejected_log_probs,
+            reference_chosen_log_probs,
+            reference_rejected_log_probs,
+        )
+
+        reward_accuracies = (chosen_rewards > rejected_rewards).float()
+        loss = loss.mean()
+
+        metrics = {
+            "rewards/chosen": chosen_rewards.mean().detach(),
+            "rewards/rejected": rejected_rewards.mean().detach(),
+            "rewards/accuracies": reward_accuracies.mean().detach(),
+            "log_probs/chosen": policy_chosen_log_probs.detach().mean(),
+            "log_probs/rejected": policy_rejected_log_probs.detach().mean(),
+            "logits/chosen": policy_chosen_logits_mean,
+            "logits/rejected": policy_rejected_logits_mean,
+        }
+
+        return loss, metrics
+    
+    def _run_attacker_inner_loop(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        if self._reset_attack_tokens_each_batch:
+            self._reset_attack_token_rows()
+
+        last_metrics: Optional[Dict[str, torch.Tensor]] = None
+
+        for _ in range(self._attack_inner_steps):
+            self._zero_all_grads()
+
+            attack_loss, attack_metrics = self._compute_dpo_loss(
+                batch, flip_preferences=True
+            )
+            attack_loss.backward()
+
+            self._mask_attack_embedding_grad()
+            self._clear_defender_grads()
+
+            self._attacker_optimizer.step()
+            last_metrics = attack_metrics
+
+        if last_metrics is None:
+            raise RuntimeError("Attacker inner loop ran zero steps.")
+
+        self._clear_attack_grads()
+        return last_metrics
+    
+    def _run_defender_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        self._zero_all_grads()
+
+        defender_loss, defender_metrics = self._compute_dpo_loss(
+            batch, flip_preferences=False
+        )
+        defender_loss.backward()
+
+        self._clear_attack_grads()
+
+        self._defender_optimizer.step()
+        self._lr_scheduler.step()
+
+        return defender_loss.detach(), defender_metrics
+
     def train(self) -> None:
         """
         The core training loop.
@@ -819,10 +935,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         world_size, rank = utils.get_world_size_and_rank()
 
         # zero out the gradients before starting training
-        self._optimizer.zero_grad()
+        self._zero_all_grads()
 
         # Initialize tokens count and running loss (for grad accumulation)
-        train_start_time = time.perf_counter()
         t0 = time.perf_counter()
 
         # Running metrics
@@ -864,149 +979,136 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 # batch is input_ids, labels
                 num_tokens += torch.tensor(batch[0].numel())
 
-                (
-                    policy_chosen_log_probs,
-                    policy_rejected_log_probs,
-                    policy_chosen_logits,
-                    policy_rejected_logits,
-                ) = self.concatenated_forward(self._model, batch)
+                attacker_metrics = None
+                if self._enable_attack_inner_loop:
+                    attacker_metrics = self._run_attacker_inner_loop(batch)
 
-                policy_chosen_logits_mean = policy_chosen_logits.detach().mean()
-                policy_rejected_logits_mean = policy_rejected_logits.detach().mean()
+                defender_loss, defender_metrics = self._run_defender_step(batch)
 
-                # deleting logits here helps reduce (peak) memory usage - we only need them for metric logging
-                del policy_chosen_logits, policy_rejected_logits
+                running_loss = defender_loss.detach()
+                running_metrics = dict(defender_metrics)
 
-                with torch.no_grad(), disable_adapter(self._model):
-                    (
-                        reference_chosen_log_probs,
-                        reference_rejected_log_probs,
-                        _,
-                        _,
-                    ) = self.concatenated_forward(self._model, batch)
-                loss, chosen_rewards, rejected_rewards = self._loss_fn(
-                    policy_chosen_log_probs,
-                    policy_rejected_log_probs,
-                    reference_chosen_log_probs,
-                    reference_rejected_log_probs,
-                )
-                reward_accuracies = (chosen_rewards > rejected_rewards).float()
-
-                loss = loss.mean()
-
-                loss = loss / self._gradient_accumulation_steps
-
-                # Update running metrics
-                running_loss += loss
-                scaling_factor = (
-                    1 / self._gradient_accumulation_steps
-                )  # to average out between grad_acc steps
-                running_metrics["rewards/chosen"] += (
-                    scaling_factor * chosen_rewards.mean()
-                )
-                running_metrics["rewards/rejected"] += (
-                    scaling_factor * rejected_rewards.mean()
-                )
-                running_metrics["rewards/accuracies"] += (
-                    scaling_factor * reward_accuracies.mean()
-                )
-                running_metrics["log_probs/chosen"] += (
-                    scaling_factor * policy_chosen_log_probs.detach().mean()
-                )
-                running_metrics["log_probs/rejected"] += (
-                    scaling_factor * policy_rejected_log_probs.detach().mean()
-                )
-                running_metrics["logits/chosen"] += (
-                    scaling_factor * policy_chosen_logits_mean
-                )
-                running_metrics["logits/rejected"] += (
-                    scaling_factor * policy_rejected_logits_mean
-                )
-
-                loss.backward()
-                
-                if self._training_mode == "attack":
-                    grad = self._attack_embedding_param.grad
-                    if grad is not None:
-                        mask = torch.zeros(grad.size(0), dtype=torch.bool, device=grad.device)
-                        mask[self._attack_token_ids] = True
-                        grad[~mask] = 0
-
-                # Step with optimizer
-                if (idx + 1) % self._gradient_accumulation_steps == 0:
-                    # Accumulate running metrics across all devices
-                    torch.distributed.all_reduce(running_loss)
-                    torch.distributed.all_reduce(num_tokens)
-
-                    for key in running_metrics:
-                        torch.distributed.all_reduce(
-                            running_metrics[key], op=torch.distributed.ReduceOp.AVG
-                        )
-
-                    self._optimizer.step()
-                    self._optimizer.zero_grad(set_to_none=True)
-                    self._lr_scheduler.step()
-
-                    # Update the number of steps when the weights are updated
-                    self.global_step += 1
-
-                    loss_to_log = running_loss.item()
-                    pbar.update(1)
-                    pbar.set_description(
-                        f"{curr_epoch + 1}|{self.global_step}|Loss: {loss_to_log}"
+                if attacker_metrics is not None:
+                    running_metrics.update(
+                        {
+                            "attacker/rewards/chosen": attacker_metrics[
+                                "rewards/chosen"
+                            ],
+                            "attacker/rewards/rejected": attacker_metrics[
+                                "rewards/rejected"
+                            ],
+                            "attacker/rewards/accuracies": attacker_metrics[
+                                "rewards/accuracies"
+                            ],
+                            "attacker/log_probs/chosen": attacker_metrics[
+                                "log_probs/chosen"
+                            ],
+                            "attacker/log_probs/rejected": attacker_metrics[
+                                "log_probs/rejected"
+                            ],
+                            "attacker/logits/chosen": attacker_metrics[
+                                "logits/chosen"
+                            ],
+                            "attacker/logits/rejected": attacker_metrics[
+                                "logits/rejected"
+                            ],
+                        }
                     )
 
-                    # Log per-step metrics
-                    if (
-                        self.global_step % self._log_every_n_steps == 0
-                        and self._is_rank_zero
-                    ):
-                        time_per_step = time.perf_counter() - t0
-                        wall_clock_seconds = time.perf_counter() - train_start_time
-                        log_dict = {
-                            "loss": loss_to_log,
-                            "lr": self._optimizer.param_groups[0]["lr"],
-                            "step_time_seconds": time_per_step,
-                            "wall_clock_seconds": wall_clock_seconds,
-                            "tokens_per_second_per_gpu": num_tokens
-                            / (time_per_step * world_size),
-                            "rewards/chosen": running_metrics["rewards/chosen"].cpu(),
-                            "rewards/rejected": running_metrics[
-                                "rewards/rejected"
-                            ].cpu(),
-                            "rewards/accuracies": running_metrics[
-                                "rewards/accuracies"
-                            ].cpu(),
-                            "rewards/margins": (
-                                running_metrics["rewards/chosen"]
-                                - running_metrics["rewards/rejected"]
-                            ).cpu(),
-                            "log_probs/chosen": running_metrics[
-                                "log_probs/chosen"
-                            ].cpu(),
-                            "log_probs/rejected": running_metrics[
-                                "log_probs/rejected"
-                            ].cpu(),
-                            "logits/chosen": running_metrics["logits/chosen"].cpu(),
-                            "logits/rejected": running_metrics["logits/rejected"].cpu(),
-                        }
-                        if self._log_peak_memory_stats:
-                            log_dict.update(
-                                training.get_memory_stats(device=self._device)
-                            )
-                        self._metric_logger.log_dict(
-                            log_dict,
-                            step=self.global_step,
+                torch.distributed.all_reduce(running_loss)
+                torch.distributed.all_reduce(num_tokens)
+
+                for key in running_metrics:
+                    torch.distributed.all_reduce(
+                        running_metrics[key], op=torch.distributed.ReduceOp.AVG
+                    )
+
+                self.global_step += 1
+
+                loss_to_log = running_loss.item()
+                pbar.update(1)
+                pbar.set_description(
+                    f"{curr_epoch + 1}|{self.global_step}|Loss: {loss_to_log}"
+                )
+
+                if (
+                    self.global_step % self._log_every_n_steps == 0
+                    and self._is_rank_zero
+                ):
+                    time_per_step = time.perf_counter() - t0
+                    log_dict = {
+                        "loss": loss_to_log,
+                        "lr": self._defender_optimizer.param_groups[0]["lr"],
+                        "tokens_per_second_per_gpu": num_tokens
+                        / (time_per_step * world_size),
+                        "rewards/chosen": running_metrics["rewards/chosen"].cpu(),
+                        "rewards/rejected": running_metrics[
+                            "rewards/rejected"
+                        ].cpu(),
+                        "rewards/accuracies": running_metrics[
+                            "rewards/accuracies"
+                        ].cpu(),
+                        "rewards/margins": (
+                            running_metrics["rewards/chosen"]
+                            - running_metrics["rewards/rejected"]
+                        ).cpu(),
+                        "log_probs/chosen": running_metrics[
+                            "log_probs/chosen"
+                        ].cpu(),
+                        "log_probs/rejected": running_metrics[
+                            "log_probs/rejected"
+                        ].cpu(),
+                        "logits/chosen": running_metrics["logits/chosen"].cpu(),
+                        "logits/rejected": running_metrics["logits/rejected"].cpu(),
+                    }
+
+                    if attacker_metrics is not None:
+                        log_dict.update(
+                            {
+                                "attacker/rewards/chosen": running_metrics[
+                                    "attacker/rewards/chosen"
+                                ].cpu(),
+                                "attacker/rewards/rejected": running_metrics[
+                                    "attacker/rewards/rejected"
+                                ].cpu(),
+                                "attacker/rewards/accuracies": running_metrics[
+                                    "attacker/rewards/accuracies"
+                                ].cpu(),
+                                "attacker/rewards/margins": (
+                                    running_metrics["attacker/rewards/chosen"]
+                                    - running_metrics["attacker/rewards/rejected"]
+                                ).cpu(),
+                                "attacker/log_probs/chosen": running_metrics[
+                                    "attacker/log_probs/chosen"
+                                ].cpu(),
+                                "attacker/log_probs/rejected": running_metrics[
+                                    "attacker/log_probs/rejected"
+                                ].cpu(),
+                                "attacker/logits/chosen": running_metrics[
+                                    "attacker/logits/chosen"
+                                ].cpu(),
+                                "attacker/logits/rejected": running_metrics[
+                                    "attacker/logits/rejected"
+                                ].cpu(),
+                            }
                         )
 
-                    # Reset running stats for the next step
-                    running_loss = 0
-                    running_metrics = {key: 0 for key in running_metrics}
-                    num_tokens = 0
+                    if self._log_peak_memory_stats:
+                        log_dict.update(
+                            training.get_memory_stats(device=self._device)
+                        )
+                    self._metric_logger.log_dict(
+                        log_dict,
+                        step=self.global_step,
+                    )
 
-                    t0 = time.perf_counter()
+                running_loss = 0
+                running_metrics = {key: 0 for key in running_metrics}
+                num_tokens = 0
+
+                t0 = time.perf_counter()
                 #print()
-                #self.save_checkpoint(epoch=curr_epoch + (idx + 1) / self._steps_per_epoch)
+                # self.save_checkpoint(epoch=curr_epoch + (idx + 1) / self._steps_per_epoch)
                 #print(time.time() - start_time)
             self.epochs_run += 1
             self.save_checkpoint(epoch=curr_epoch)

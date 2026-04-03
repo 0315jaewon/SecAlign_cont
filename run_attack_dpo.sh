@@ -7,12 +7,6 @@ cd "$ROOT_DIR"
 
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
-CONFIG_FILE="${CONFIG_FILE:-helpers/llama3.1_8B_lora.yaml}"
-DATA_FILE="${DATA_FILE:-data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json}"
-CACHE_DIR="${CACHE_DIR:-}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/attack_dpo_8b_lr1e-4}"
-LR="${LR:-1e-4}"
-
 detect_nproc_per_node() {
   if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     python - <<'PY'
@@ -31,10 +25,27 @@ PY
   echo 1
 }
 
+CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/helpers/llama3.2_1B_lora.yaml}"
+DATA_FILE="${DATA_FILE:-$ROOT_DIR/data/preference_Llama-3.2-1B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json}"
+CACHE_DIR="${CACHE_DIR:-}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/adv_dpo_1b}"
+
 NPROC_PER_NODE="${NPROC_PER_NODE:-$(detect_nproc_per_node)}"
+LR="${LR:-1e-4}"
+EPOCHS="${EPOCHS:-1}"
+MAX_STEPS_PER_EPOCH="${MAX_STEPS_PER_EPOCH:-10}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
+
+ENABLE_ATTACK_INNER_LOOP="${ENABLE_ATTACK_INNER_LOOP:-True}"
+ATTACK_INNER_STEPS="${ATTACK_INNER_STEPS:-3}"
+RESET_ATTACK_TOKENS_EACH_BATCH="${RESET_ATTACK_TOKENS_EACH_BATCH:-False}"
+
+LOG_EVERY_N_STEPS="${LOG_EVERY_N_STEPS:-1}"
+LOG_PEAK_MEMORY_STATS="${LOG_PEAK_MEMORY_STATS:-True}"
 
 if [[ -z "$CACHE_DIR" ]]; then
-  echo "CACHE_DIR is required and should point at the local Meta-Llama-3.1-8B-Instruct snapshot." >&2
+  echo "CACHE_DIR is required and should point to the local model snapshot directory." >&2
   exit 1
 fi
 
@@ -50,21 +61,49 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
+CMD=(
+  torchrun
+  --nproc_per_node "$NPROC_PER_NODE"
+  "$ROOT_DIR/lora_dpo_distributed.py"
+  --config "$CONFIG_FILE"
+  "output_dir=$OUTPUT_DIR"
+  "cache_dir=$CACHE_DIR"
+  "dataset.data_files=$DATA_FILE"
+  "optimizer.lr=$LR"
+  "epochs=$EPOCHS"
+  "max_steps_per_epoch=$MAX_STEPS_PER_EPOCH"
+  "batch_size=$BATCH_SIZE"
+  "gradient_accumulation_steps=$GRAD_ACCUM"
+  "enable_attack_inner_loop=$ENABLE_ATTACK_INNER_LOOP"
+  "attack_inner_steps=$ATTACK_INNER_STEPS"
+  "reset_attack_tokens_each_batch=$RESET_ATTACK_TOKENS_EACH_BATCH"
+  "log_every_n_steps=$LOG_EVERY_N_STEPS"
+  "log_peak_memory_stats=$LOG_PEAK_MEMORY_STATS"
+)
+
+if (($# > 0)); then
+  CMD+=("$@")
+fi
+
 echo "Launching adversarial DPO training"
 echo "ROOT_DIR=$ROOT_DIR"
-echo "NPROC_PER_NODE=$NPROC_PER_NODE"
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "CONFIG_FILE=$CONFIG_FILE"
 echo "DATA_FILE=$DATA_FILE"
 echo "CACHE_DIR=$CACHE_DIR"
 echo "OUTPUT_DIR=$OUTPUT_DIR"
+echo "NPROC_PER_NODE=$NPROC_PER_NODE"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "LR=$LR"
+echo "EPOCHS=$EPOCHS"
+echo "MAX_STEPS_PER_EPOCH=$MAX_STEPS_PER_EPOCH"
+echo "BATCH_SIZE=$BATCH_SIZE"
+echo "GRAD_ACCUM=$GRAD_ACCUM"
+echo "ENABLE_ATTACK_INNER_LOOP=$ENABLE_ATTACK_INNER_LOOP"
+echo "ATTACK_INNER_STEPS=$ATTACK_INNER_STEPS"
+echo "RESET_ATTACK_TOKENS_EACH_BATCH=$RESET_ATTACK_TOKENS_EACH_BATCH"
+echo
+printf 'Command:'
+printf ' %q' "${CMD[@]}"
+printf '\n\n'
 
-torchrun \
-  --nproc_per_node "$NPROC_PER_NODE" \
-  "$ROOT_DIR/lora_dpo_distributed.py" \
-  --config "$CONFIG_FILE" \
-  output_dir="$OUTPUT_DIR" \
-  dataset.data_files="$DATA_FILE" \
-  optimizer.lr="$LR" \
-  cache_dir="$CACHE_DIR"
+"${CMD[@]}"
