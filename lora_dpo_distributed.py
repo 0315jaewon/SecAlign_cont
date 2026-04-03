@@ -157,6 +157,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._reset_attack_tokens_each_batch = cfg.get(
             "reset_attack_tokens_each_batch", False
         )
+        self._debug = cfg.get("debug", False)
 
         # activation checkpointing/offloading
         self._enable_activation_checkpointing = cfg.get(
@@ -599,6 +600,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             f"Instantiating model and loading checkpoint took {time.perf_counter() - init_start:.2f} secs",
         )
 
+        self._attack_embedding_param = model.tok_embeddings.weight
         self._initial_attack_embedding_rows = (
             self._attack_embedding_param.detach()[self._attack_token_ids].clone()
         )
@@ -896,9 +898,22 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             )
             attack_loss.backward()
 
+            if self._debug:
+                grad = self._attack_embedding_param.grad
+                utils.log_rank_zero(
+                    log,
+                    "attacker_debug "
+                    f"global_step={self.global_step} "
+                    f"inner_step={_ + 1}/{self._attack_inner_steps} "
+                    f"requires_grad={self._attack_embedding_param.requires_grad} "
+                    f"param_is_meta={self._attack_embedding_param.is_meta} "
+                    f"grad_is_none={grad is None} "
+                    f"grad_is_meta={getattr(grad, 'is_meta', False) if grad is not None else 'na'}",
+                )
+
             self._mask_attack_embedding_grad()
             grad = self._attack_embedding_param.grad
-            if grad is not None:
+            if grad is not None and not getattr(grad, "is_meta", False):
                 attack_grad_norm = grad[self._attack_token_ids].norm().detach()
             else:
                 attack_grad_norm = torch.tensor(float("nan"), device=self._device)
