@@ -6,6 +6,7 @@
 
 from typing import Any, Callable, Mapping, Optional
 import logging
+import re
 
 import numpy as np
 from datasets import load_dataset
@@ -151,17 +152,36 @@ class PreferenceDataset(Dataset):
                 f"got {type(rejected_input_whole)!r}"
             )
 
-        if rejected_input_whole not in prompt:
-            raise ValueError(
-                "rejected_input_whole/rejected_input was not found inside prompt, "
-                "so the attack suffix cannot be inserted at the intended location."
+        attacked_prompt = None
+
+        if rejected_input_whole in prompt:
+            attacked_prompt = prompt.replace(
+                rejected_input_whole,
+                rejected_input_whole + self._attack_suffix,
+                1,
             )
-        
-        attacked_prompt = prompt.replace(
-            rejected_input_whole,
-            rejected_input_whole + self._attack_suffix,
-            1,
-        )
+        else:
+            # Some datasets store a whitespace-normalized rejected_input rather than the
+            # exact prompt substring. Try a whitespace-tolerant match first.
+            pattern = re.escape(rejected_input_whole.strip()).replace(r"\ ", r"\s+")
+            match = re.search(pattern, prompt)
+            if match is not None:
+                attacked_prompt = (
+                    prompt[: match.end()] + self._attack_suffix + prompt[match.end() :]
+                )
+            else:
+                # Final fallback: place the attack suffix immediately before the
+                # assistant header, i.e. after the entire injected prompt content.
+                assistant_header = "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+                assistant_idx = prompt.find(assistant_header)
+                if assistant_idx == -1:
+                    raise ValueError(
+                        "Could not locate rejected_input span or assistant header in prompt, "
+                        "so the attack suffix cannot be inserted."
+                    )
+                attacked_prompt = (
+                    prompt[:assistant_idx] + self._attack_suffix + prompt[assistant_idx:]
+                )
 
         prompt_tokenized = self._tokenizer.encode(attacked_prompt)
         prompt_mask = [True] * len(prompt_tokenized)
