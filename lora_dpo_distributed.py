@@ -847,13 +847,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         del policy_chosen_logits, policy_rejected_logits
 
-        with torch.no_grad(), disable_adapter(self._model):
-            (
-                reference_chosen_log_probs,
-                reference_rejected_log_probs,
-                _,
-                _,
-            ) = self.concatenated_forward(self._model, batch)
+        (
+            reference_chosen_log_probs,
+            reference_rejected_log_probs,
+        ) = self._run_reference_forward_with_frozen_attack_tokens(batch)
 
         if flip_preferences:
             (
@@ -892,6 +889,31 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         }
 
         return loss, metrics
+
+    def _run_reference_forward_with_frozen_attack_tokens(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            attack_param = self._to_local_tensor(self._attack_embedding_param)
+            current_rows = attack_param[self._attack_token_ids].clone()
+            attack_param[self._attack_token_ids].copy_(
+                self._initial_attack_embedding_rows
+            )
+
+        try:
+            with torch.no_grad(), disable_adapter(self._model):
+                (
+                    reference_chosen_log_probs,
+                    reference_rejected_log_probs,
+                    _,
+                    _,
+                ) = self.concatenated_forward(self._model, batch)
+        finally:
+            with torch.no_grad():
+                attack_param = self._to_local_tensor(self._attack_embedding_param)
+                attack_param[self._attack_token_ids].copy_(current_rows)
+
+        return reference_chosen_log_probs, reference_rejected_log_probs
     
     def _run_attacker_inner_loop(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
