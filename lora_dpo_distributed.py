@@ -424,10 +424,18 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     
     def _reset_attack_token_rows(self) -> None:
         with torch.no_grad():
-            attack_param = self._get_attack_tensor_view(self._attack_embedding_param)
+            attack_param = self._get_live_attack_embedding()
             attack_param[self._attack_token_ids].copy_(
                 self._initial_attack_embedding_rows
             )
+            post_reset_delta_norm = (
+                attack_param[self._attack_token_ids]
+                - self._initial_attack_embedding_rows
+            ).norm().detach()
+        utils.log_rank_zero(
+            log,
+            f"attacker_reset global_step={self.global_step} delta_norm={post_reset_delta_norm.item():.6f}",
+        )
 
     def _reset_attack_state(self) -> None:
         self._reset_attack_token_rows()
@@ -467,6 +475,13 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if world_size == 1:
             return tensor
         return self._to_local_tensor(tensor)
+
+    def _get_live_attack_embedding(self) -> torch.Tensor:
+        weight = self._model.tok_embeddings.weight
+        world_size, _ = utils.get_world_size_and_rank()
+        if world_size == 1:
+            return weight
+        return self._to_local_tensor(weight)
     
     def _expand_base_state_dict_for_attack_tokens(
         self, base_model_state_dict: Dict[str, Any]
@@ -915,7 +930,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
-            attack_param = self._get_attack_tensor_view(self._attack_embedding_param)
+            attack_param = self._get_live_attack_embedding()
             current_rows = attack_param[self._attack_token_ids].clone()
             attack_param[self._attack_token_ids].copy_(
                 self._initial_attack_embedding_rows
@@ -931,9 +946,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 ) = self.concatenated_forward(self._model, batch)
         finally:
             with torch.no_grad():
-                attack_param = self._get_attack_tensor_view(
-                    self._attack_embedding_param
-                )
+                attack_param = self._get_live_attack_embedding()
                 attack_param[self._attack_token_ids].copy_(current_rows)
 
         return reference_chosen_log_probs, reference_rejected_log_probs
