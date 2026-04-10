@@ -935,6 +935,33 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._model.eval()
 
         try:
+            with torch.no_grad():
+                attack_loss_0, attack_metrics_0 = self._compute_dpo_loss(
+                    batch, flip_preferences=True
+                )
+                attack_param = self._to_local_tensor(self._attack_embedding_param)
+                attack_rows = attack_param[self._attack_token_ids]
+                attack_rows_norm = attack_rows.norm().detach()
+                attack_delta_norm = (
+                    attack_rows - self._initial_attack_embedding_rows
+                ).norm().detach()
+                attack_reward_margin = (
+                    attack_metrics_0["rewards/chosen"]
+                    - attack_metrics_0["rewards/rejected"]
+                ).detach()
+
+            utils.log_rank_zero(
+                log,
+                "attacker_inner_loop "
+                f"global_step={self.global_step} "
+                f"inner_step=0/{self._attack_inner_steps} "
+                f"loss={attack_loss_0.detach().item():.6f} "
+                f"reward_margin={attack_reward_margin.item():.6f} "
+                "grad_norm=nan "
+                f"embed_norm={attack_rows_norm.item():.6f} "
+                f"delta_norm={attack_delta_norm.item():.6f}",
+            )
+
             for _ in range(self._attack_inner_steps):
                 self._zero_all_grads()
 
