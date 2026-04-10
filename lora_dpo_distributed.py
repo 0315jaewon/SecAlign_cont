@@ -870,6 +870,11 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self, batch: Tuple[torch.Tensor, torch.Tensor], flip_preferences: bool = False
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         (
+            reference_chosen_log_probs,
+            reference_rejected_log_probs,
+        ) = self._run_reference_forward_with_frozen_attack_tokens(batch)
+
+        (
             policy_chosen_log_probs,
             policy_rejected_log_probs,
             policy_chosen_logits,
@@ -880,11 +885,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         policy_rejected_logits_mean = policy_rejected_logits.detach().mean()
 
         del policy_chosen_logits, policy_rejected_logits
-
-        (
-            reference_chosen_log_probs,
-            reference_rejected_log_probs,
-        ) = self._run_reference_forward_with_frozen_attack_tokens(batch)
 
         if flip_preferences:
             (
