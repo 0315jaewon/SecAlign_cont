@@ -1,0 +1,560 @@
+nohup: ignoring input
+Launching adversarial DPO training
+ROOT_DIR=/home/gcpuser/sky_workdir
+CONFIG_FILE=/home/gcpuser/sky_workdir/helpers/llama3.2_1B_lora.yaml
+DATA_FILE=/home/gcpuser/sky_workdir/data/preference_Llama-3.2-1B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
+CACHE_DIR=/home/gcpuser/models/Meta-Llama-3.2-1B-Instruct
+OUTPUT_DIR=/home/gcpuser/sky_workdir/runs/adv_dpo_1b
+NPROC_PER_NODE=1
+CUDA_VISIBLE_DEVICES=0
+LR=1e-4
+ATTACKER_LR=5e-4
+EPOCHS=1
+MAX_STEPS_PER_EPOCH=20
+BATCH_SIZE=1
+GRAD_ACCUM=1
+ENABLE_ATTACK_INNER_LOOP=True
+ATTACK_INNER_STEPS=20
+RESET_ATTACK_TOKENS_EACH_BATCH=True
+
+Command: torchrun --nproc_per_node 1 /home/gcpuser/sky_workdir/lora_dpo_distributed.py --config /home/gcpuser/sky_workdir/helpers/llama3.2_1B_lora.yaml output_dir=/home/gcpuser/sky_workdir/runs/adv_dpo_1b cache_dir=/home/gcpuser/models/Meta-Llama-3.2-1B-Instruct dataset.data_files=/home/gcpuser/sky_workdir/data/preference_Llama-3.2-1B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json optimizer.lr=1e-4 attacker_optimizer.lr=5e-4 epochs=1 max_steps_per_epoch=20 batch_size=1 gradient_accumulation_steps=1 enable_attack_inner_loop=True attack_inner_steps=20 reset_attack_tokens_each_batch=True log_every_n_steps=1 log_peak_memory_stats=True
+
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+INFO:torchtune.utils._logging:Running LoRADPORecipeDistributed with resolved config:
+
+attack_init_token: '!'
+attack_inner_steps: 20
+attack_token_prefix: <ATTACK_
+attacker_optimizer:
+  _component_: torch.optim.AdamW
+  fused: true
+  lr: 0.0005
+  weight_decay: 0.0
+batch_size: 1
+cache_dir: /home/gcpuser/models/Meta-Llama-3.2-1B-Instruct
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: /home/gcpuser/models/Meta-Llama-3.2-1B-Instruct/
+  checkpoint_files:
+  - model.safetensors
+  model_type: LLAMA3
+  output_dir: /home/gcpuser/sky_workdir/runs/adv_dpo_1b
+  recipe_checkpoint: null
+clip_grad_norm: null
+compile: false
+dataset:
+  _component_: helpers._preference.preference_dataset
+  data_files: /home/gcpuser/sky_workdir/data/preference_Llama-3.2-1B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
+  packed: false
+  source: json
+  split: train
+device: cuda
+dtype: bf16
+enable_activation_checkpointing: true
+enable_activation_offloading: false
+enable_attack_inner_loop: true
+epochs: 1
+gradient_accumulation_steps: 1
+log_every_n_steps: 1
+log_level: INFO
+log_peak_memory_stats: true
+loss:
+  _component_: torchtune.rlhf.loss.DPOLoss
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 0
+max_steps_per_epoch: 20
+metric_logger:
+  _component_: torchtune.training.metric_logging.DiskLogger
+  log_dir: /home/gcpuser/sky_workdir/runs/adv_dpo_1b/logs
+model:
+  _component_: torchtune.models.llama3_2.lora_llama3_2_1b
+  apply_lora_to_mlp: true
+  apply_lora_to_output: false
+  lora_alpha: 8
+  lora_attn_modules:
+  - q_proj
+  - v_proj
+  lora_dropout: 0.1
+  lora_rank: 64
+num_attack_tokens: 10
+optimizer:
+  _component_: torch.optim.AdamW
+  fused: true
+  lr: 0.0001
+  weight_decay: 0.0
+output_dir: /home/gcpuser/sky_workdir/runs/adv_dpo_1b
+reset_attack_tokens_each_batch: true
+resume_from_checkpoint: false
+save_adapter_weights_only: true
+seed: null
+shuffle: true
+tokenizer:
+  _component_: helpers.hf_tokenizer.HFLlamaTokenizer
+  max_seq_len: 1024
+  path: /home/gcpuser/models/Meta-Llama-3.2-1B-Instruct
+
+INFO:torchtune.utils._logging:Hint: enable_activation_checkpointing is True, but enable_activation_offloading isn't. Enabling activation offloading should reduce memory further.
+DEBUG:torchtune.utils._logging:Setting manual seed to local seed 3895872769. Local seed is seed + rank = 3895872769 + 0
+Writing logs to /home/gcpuser/sky_workdir/runs/adv_dpo_1b/logs/log_1775848593.txt
+INFO:torchtune.utils._logging:metric logger is initialized.
+INFO:torchtune.utils._logging:Registered attack tokens: ['<ATTACK_0>', '<ATTACK_1>', '<ATTACK_2>', '<ATTACK_3>', '<ATTACK_4>', '<ATTACK_5>', '<ATTACK_6>', '<ATTACK_7>', '<ATTACK_8>', '<ATTACK_9>']
+INFO:torchtune.utils._logging:Attack token ids: [128256, 128257, 128258, 128259, 128260, 128261, 128262, 128263, 128264, 128265]
+INFO:torchtune.utils._logging:Attack init token ! has id 0
+INFO:torchtune.utils._logging:FSDP is enabled. Instantiating model and loading checkpoint on Rank 0 ...
+INFO:torchtune.utils._logging:Resized vocab structurally from 128256 to 128266 before sharding.
+INFO:torchtune.utils._logging:Instantiating model and loading checkpoint took 1.68 secs
+INFO:torchtune.utils._logging:Memory stats after model init:
+	GPU peak memory allocation: 2.42 GiB
+	GPU peak memory reserved: 2.44 GiB
+	GPU peak memory active: 2.42 GiB
+INFO:torchtune.utils._logging:Defender optimizer is initialized.
+INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:Loss is initialized.
+INFO:torchtune.utils._logging:Dataset and Sampler are initialized.
+INFO:torchtune.utils._logging:Learning rate scheduler is initialized.
+  0%|          | 0/20 [00:00<?, ?it/s]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=1/20 loss=0.693147 reward_margin=0.000000 grad_norm=5.375000 embed_norm=2.500000 delta_norm=0.070312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=2/20 loss=0.693147 reward_margin=0.000000 grad_norm=3.843750 embed_norm=2.500000 delta_norm=0.130859
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=3/20 loss=0.693147 reward_margin=0.000000 grad_norm=3.453125 embed_norm=2.500000 delta_norm=0.185547
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=4/20 loss=0.693147 reward_margin=0.000000 grad_norm=4.218750 embed_norm=2.500000 delta_norm=0.237305
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=5/20 loss=0.693147 reward_margin=0.000000 grad_norm=5.906250 embed_norm=2.515625 delta_norm=0.285156
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=6/20 loss=0.693147 reward_margin=0.000000 grad_norm=8.000000 embed_norm=2.515625 delta_norm=0.330078
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=7/20 loss=0.693147 reward_margin=0.000000 grad_norm=9.687500 embed_norm=2.515625 delta_norm=0.371094
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=8/20 loss=0.693147 reward_margin=0.000000 grad_norm=12.812500 embed_norm=2.515625 delta_norm=0.412109
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=9/20 loss=0.693147 reward_margin=0.000000 grad_norm=13.937500 embed_norm=2.531250 delta_norm=0.449219
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=10/20 loss=0.693147 reward_margin=0.000000 grad_norm=21.750000 embed_norm=2.531250 delta_norm=0.482422
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=11/20 loss=0.693147 reward_margin=0.000000 grad_norm=32.750000 embed_norm=2.546875 delta_norm=0.515625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=12/20 loss=0.693147 reward_margin=0.000000 grad_norm=28.250000 embed_norm=2.546875 delta_norm=0.542969
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=13/20 loss=0.693147 reward_margin=0.000000 grad_norm=38.750000 embed_norm=2.546875 delta_norm=0.570312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=14/20 loss=0.693147 reward_margin=0.000000 grad_norm=44.000000 embed_norm=2.562500 delta_norm=0.601562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=15/20 loss=0.693147 reward_margin=0.000000 grad_norm=50.750000 embed_norm=2.578125 delta_norm=0.628906
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=16/20 loss=0.693147 reward_margin=0.000000 grad_norm=79.000000 embed_norm=2.578125 delta_norm=0.656250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=17/20 loss=0.693147 reward_margin=0.000000 grad_norm=88.000000 embed_norm=2.593750 delta_norm=0.687500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=18/20 loss=0.693147 reward_margin=0.000000 grad_norm=121.500000 embed_norm=2.609375 delta_norm=0.714844
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=19/20 loss=0.693147 reward_margin=0.000000 grad_norm=185.000000 embed_norm=2.609375 delta_norm=0.742188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=0 inner_step=20/20 loss=0.693147 reward_margin=0.000000 grad_norm=324.000000 embed_norm=2.625000 delta_norm=0.769531
+  5%|▌         | 1/20 [00:07<02:17,  7.22s/it]1|1|Loss: 0.6931471824645996:   5%|▌         | 1/20 [00:07<02:17,  7.22s/it]                                                                            
+1|1|Loss: 0.6931471824645996:   5%|▌         | 1/20 [00:07<02:17,  7.22s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=1/20 loss=0.646011 reward_margin=0.096604 grad_norm=28.000000 embed_norm=2.625000 delta_norm=0.769531
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=2/20 loss=0.703192 reward_margin=-0.019990 grad_norm=18.250000 embed_norm=2.625000 delta_norm=0.773438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=3/20 loss=0.683572 reward_margin=0.019242 grad_norm=13.125000 embed_norm=2.609375 delta_norm=0.781250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=4/20 loss=0.694835 reward_margin=-0.003374 grad_norm=14.500000 embed_norm=2.609375 delta_norm=0.792969
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=5/20 loss=0.703937 reward_margin=-0.021464 grad_norm=14.500000 embed_norm=2.609375 delta_norm=0.804688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=6/20 loss=0.698275 reward_margin=-0.010229 grad_norm=17.625000 embed_norm=2.609375 delta_norm=0.816406
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=7/20 loss=0.729837 reward_margin=-0.072081 grad_norm=18.875000 embed_norm=2.609375 delta_norm=0.832031
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=8/20 loss=0.683333 reward_margin=0.019727 grad_norm=36.000000 embed_norm=2.609375 delta_norm=0.843750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=9/20 loss=0.677604 reward_margin=0.031331 grad_norm=25.125000 embed_norm=2.609375 delta_norm=0.855469
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=10/20 loss=0.726152 reward_margin=-0.064954 grad_norm=29.125000 embed_norm=2.609375 delta_norm=0.871094
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=11/20 loss=0.682337 reward_margin=0.021738 grad_norm=37.750000 embed_norm=2.609375 delta_norm=0.882812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=12/20 loss=0.735772 reward_margin=-0.083508 grad_norm=47.250000 embed_norm=2.625000 delta_norm=0.894531
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=13/20 loss=0.677348 reward_margin=0.031853 grad_norm=64.500000 embed_norm=2.625000 delta_norm=0.906250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=14/20 loss=0.711246 reward_margin=-0.035876 grad_norm=92.500000 embed_norm=2.625000 delta_norm=0.917969
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=15/20 loss=0.608379 reward_margin=0.177392 grad_norm=98.500000 embed_norm=2.625000 delta_norm=0.929688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=16/20 loss=0.744159 reward_margin=-0.099548 grad_norm=181.000000 embed_norm=2.625000 delta_norm=0.941406
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=17/20 loss=0.518628 reward_margin=0.386071 grad_norm=149.000000 embed_norm=2.625000 delta_norm=0.949219
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=18/20 loss=0.726145 reward_margin=-0.064942 grad_norm=207.000000 embed_norm=2.625000 delta_norm=0.960938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=19/20 loss=0.545969 reward_margin=0.319820 grad_norm=322.000000 embed_norm=2.625000 delta_norm=0.968750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=1 inner_step=20/20 loss=0.689945 reward_margin=0.006415 grad_norm=362.000000 embed_norm=2.640625 delta_norm=0.976562
+1|1|Loss: 0.6931471824645996:  10%|█         | 2/20 [00:13<01:58,  6.58s/it]1|2|Loss: 0.4751840829849243:  10%|█         | 2/20 [00:13<01:58,  6.58s/it]                                                                            
+1|2|Loss: 0.4751840829849243:  10%|█         | 2/20 [00:13<01:58,  6.58s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=1/20 loss=0.660377 reward_margin=0.066651 grad_norm=68.000000 embed_norm=2.640625 delta_norm=0.972656
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=2/20 loss=0.729343 reward_margin=-0.071127 grad_norm=18.750000 embed_norm=2.640625 delta_norm=0.976562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=3/20 loss=0.677885 reward_margin=0.030760 grad_norm=33.500000 embed_norm=2.640625 delta_norm=0.980469
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=4/20 loss=0.691538 reward_margin=0.003220 grad_norm=62.000000 embed_norm=2.640625 delta_norm=0.988281
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=5/20 loss=0.706539 reward_margin=-0.026607 grad_norm=44.750000 embed_norm=2.640625 delta_norm=0.996094
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=6/20 loss=0.765490 reward_margin=-0.139804 grad_norm=476.000000 embed_norm=2.640625 delta_norm=1.000000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=7/20 loss=0.762520 reward_margin=-0.134244 grad_norm=348.000000 embed_norm=2.640625 delta_norm=1.007812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=8/20 loss=0.723440 reward_margin=-0.059695 grad_norm=203.000000 embed_norm=2.640625 delta_norm=1.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=9/20 loss=0.748406 reward_margin=-0.107623 grad_norm=296.000000 embed_norm=2.640625 delta_norm=1.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=10/20 loss=0.695873 reward_margin=-0.005444 grad_norm=205.000000 embed_norm=2.656250 delta_norm=1.023438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=11/20 loss=0.700179 reward_margin=-0.014014 grad_norm=246.000000 embed_norm=2.656250 delta_norm=1.031250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=12/20 loss=0.664379 reward_margin=0.058389 grad_norm=356.000000 embed_norm=2.656250 delta_norm=1.039062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=13/20 loss=0.740712 reward_margin=-0.092969 grad_norm=300.000000 embed_norm=2.656250 delta_norm=1.054688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=14/20 loss=0.750266 reward_margin=-0.111154 grad_norm=466.000000 embed_norm=2.656250 delta_norm=1.062500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=15/20 loss=0.518075 reward_margin=0.387439 grad_norm=528.000000 embed_norm=2.671875 delta_norm=1.070312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=16/20 loss=0.722820 reward_margin=-0.058493 grad_norm=1032.000000 embed_norm=2.671875 delta_norm=1.078125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=17/20 loss=0.730337 reward_margin=-0.073047 grad_norm=420.000000 embed_norm=2.671875 delta_norm=1.085938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=18/20 loss=0.774133 reward_margin=-0.155899 grad_norm=584.000000 embed_norm=2.671875 delta_norm=1.093750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=19/20 loss=0.757865 reward_margin=-0.125494 grad_norm=292.000000 embed_norm=2.687500 delta_norm=1.101562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=2 inner_step=20/20 loss=0.545674 reward_margin=0.320517 grad_norm=576.000000 embed_norm=2.687500 delta_norm=1.109375
+1|2|Loss: 0.4751840829849243:  15%|█▌        | 3/20 [00:19<01:47,  6.35s/it]1|3|Loss: 0.8359977602958679:  15%|█▌        | 3/20 [00:19<01:47,  6.35s/it]                                                                            
+1|3|Loss: 0.8359977602958679:  15%|█▌        | 3/20 [00:19<01:47,  6.35s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=1/20 loss=1.285809 reward_margin=-0.962256 grad_norm=1568.000000 embed_norm=2.687500 delta_norm=1.117188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=2/20 loss=0.944561 reward_margin=-0.452148 grad_norm=5824.000000 embed_norm=2.687500 delta_norm=1.117188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=3/20 loss=0.481869 reward_margin=0.479492 grad_norm=644.000000 embed_norm=2.687500 delta_norm=1.117188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=4/20 loss=0.614746 reward_margin=0.163477 grad_norm=1216.000000 embed_norm=2.687500 delta_norm=1.125000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=5/20 loss=0.357528 reward_margin=0.844458 grad_norm=1488.000000 embed_norm=2.703125 delta_norm=1.132812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=6/20 loss=0.356509 reward_margin=0.847852 grad_norm=1688.000000 embed_norm=2.703125 delta_norm=1.140625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=7/20 loss=0.293495 reward_margin=1.075562 grad_norm=1240.000000 embed_norm=2.703125 delta_norm=1.148438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=8/20 loss=1.179049 reward_margin=-0.811499 grad_norm=2024.000000 embed_norm=2.703125 delta_norm=1.156250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=9/20 loss=0.494419 reward_margin=0.446997 grad_norm=752.000000 embed_norm=2.718750 delta_norm=1.164062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=10/20 loss=1.406039 reward_margin=-1.124853 grad_norm=3424.000000 embed_norm=2.718750 delta_norm=1.171875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=11/20 loss=1.592101 reward_margin=-1.364575 grad_norm=3488.000000 embed_norm=2.718750 delta_norm=1.179688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=12/20 loss=1.056056 reward_margin=-0.628613 grad_norm=2112.000000 embed_norm=2.718750 delta_norm=1.187500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=13/20 loss=0.939006 reward_margin=-0.443042 grad_norm=3216.000000 embed_norm=2.718750 delta_norm=1.195312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=14/20 loss=1.432562 reward_margin=-1.159839 grad_norm=2944.000000 embed_norm=2.734375 delta_norm=1.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=15/20 loss=1.539263 reward_margin=-1.297778 grad_norm=2832.000000 embed_norm=2.734375 delta_norm=1.218750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=16/20 loss=0.756199 reward_margin=-0.122363 grad_norm=2064.000000 embed_norm=2.734375 delta_norm=1.226562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=17/20 loss=0.276398 reward_margin=1.144531 grad_norm=720.000000 embed_norm=2.750000 delta_norm=1.242188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=18/20 loss=0.503057 reward_margin=0.425000 grad_norm=1616.000000 embed_norm=2.750000 delta_norm=1.250000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=19/20 loss=0.771062 reward_margin=-0.150220 grad_norm=1904.000000 embed_norm=2.750000 delta_norm=1.265625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=3 inner_step=20/20 loss=0.188790 reward_margin=1.571240 grad_norm=490.000000 embed_norm=2.750000 delta_norm=1.273438
+1|3|Loss: 0.8359977602958679:  20%|██        | 4/20 [00:25<01:41,  6.36s/it]1|4|Loss: 0.24102938175201416:  20%|██        | 4/20 [00:25<01:41,  6.36s/it]                                                                             
+1|4|Loss: 0.24102938175201416:  20%|██        | 4/20 [00:25<01:41,  6.36s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=1/20 loss=0.658195 reward_margin=0.071172 grad_norm=209.000000 embed_norm=2.765625 delta_norm=1.273438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=2/20 loss=0.654337 reward_margin=0.079182 grad_norm=264.000000 embed_norm=2.765625 delta_norm=1.281250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=3/20 loss=0.690182 reward_margin=0.005939 grad_norm=276.000000 embed_norm=2.765625 delta_norm=1.289062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=4/20 loss=0.735687 reward_margin=-0.083342 grad_norm=756.000000 embed_norm=2.765625 delta_norm=1.296875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=5/20 loss=0.771672 reward_margin=-0.151334 grad_norm=600.000000 embed_norm=2.765625 delta_norm=1.304688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=6/20 loss=0.557609 reward_margin=0.292377 grad_norm=544.000000 embed_norm=2.781250 delta_norm=1.312500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=7/20 loss=0.637741 reward_margin=0.114066 grad_norm=294.000000 embed_norm=2.781250 delta_norm=1.328125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=8/20 loss=0.849819 reward_margin=-0.292090 grad_norm=1120.000000 embed_norm=2.781250 delta_norm=1.335938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=9/20 loss=0.785241 reward_margin=-0.176428 grad_norm=1000.000000 embed_norm=2.796875 delta_norm=1.343750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=10/20 loss=1.073226 reward_margin=-0.654816 grad_norm=872.000000 embed_norm=2.796875 delta_norm=1.359375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=11/20 loss=0.831855 reward_margin=-0.260490 grad_norm=1704.000000 embed_norm=2.796875 delta_norm=1.367188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=12/20 loss=0.717247 reward_margin=-0.047629 grad_norm=532.000000 embed_norm=2.812500 delta_norm=1.375000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=13/20 loss=0.851064 reward_margin=-0.294263 grad_norm=1504.000000 embed_norm=2.812500 delta_norm=1.390625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=14/20 loss=0.890345 reward_margin=-0.361836 grad_norm=512.000000 embed_norm=2.812500 delta_norm=1.398438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=15/20 loss=1.010857 reward_margin=-0.558447 grad_norm=1360.000000 embed_norm=2.828125 delta_norm=1.414062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=16/20 loss=0.904257 reward_margin=-0.385329 grad_norm=408.000000 embed_norm=2.828125 delta_norm=1.421875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=17/20 loss=1.074118 reward_margin=-0.656185 grad_norm=1240.000000 embed_norm=2.843750 delta_norm=1.429688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=18/20 loss=0.796797 reward_margin=-0.197547 grad_norm=768.000000 embed_norm=2.843750 delta_norm=1.445312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=19/20 loss=1.050063 reward_margin=-0.619395 grad_norm=892.000000 embed_norm=2.859375 delta_norm=1.453125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=4 inner_step=20/20 loss=0.940895 reward_margin=-0.446129 grad_norm=1416.000000 embed_norm=2.859375 delta_norm=1.468750
+1|4|Loss: 0.24102938175201416:  25%|██▌       | 5/20 [00:32<01:35,  6.34s/it]1|5|Loss: 0.7470144033432007:  25%|██▌       | 5/20 [00:32<01:35,  6.34s/it]                                                                             
+1|5|Loss: 0.7470144033432007:  25%|██▌       | 5/20 [00:32<01:35,  6.34s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=1/20 loss=0.029286 reward_margin=3.515967 grad_norm=700.000000 embed_norm=2.859375 delta_norm=1.460938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=2/20 loss=2.216455 reward_margin=-2.101050 grad_norm=6944.000000 embed_norm=2.859375 delta_norm=1.460938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=3/20 loss=0.820827 reward_margin=-0.240887 grad_norm=1024.000000 embed_norm=2.859375 delta_norm=1.468750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=4/20 loss=0.482998 reward_margin=0.476541 grad_norm=980.000000 embed_norm=2.859375 delta_norm=1.468750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=5/20 loss=0.531096 reward_margin=0.355539 grad_norm=928.000000 embed_norm=2.859375 delta_norm=1.468750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=6/20 loss=0.288708 reward_margin=1.094513 grad_norm=468.000000 embed_norm=2.859375 delta_norm=1.476562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=7/20 loss=0.722782 reward_margin=-0.058414 grad_norm=780.000000 embed_norm=2.875000 delta_norm=1.484375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=8/20 loss=0.997522 reward_margin=-0.537402 grad_norm=900.000000 embed_norm=2.875000 delta_norm=1.484375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=9/20 loss=0.744480 reward_margin=-0.100165 grad_norm=828.000000 embed_norm=2.875000 delta_norm=1.492188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=10/20 loss=0.450393 reward_margin=0.564008 grad_norm=588.000000 embed_norm=2.875000 delta_norm=1.500000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=11/20 loss=0.565471 reward_margin=0.274069 grad_norm=676.000000 embed_norm=2.875000 delta_norm=1.507812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=12/20 loss=0.863340 reward_margin=-0.315585 grad_norm=956.000000 embed_norm=2.890625 delta_norm=1.507812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=13/20 loss=1.053796 reward_margin=-0.625147 grad_norm=1056.000000 embed_norm=2.890625 delta_norm=1.515625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=14/20 loss=2.121167 reward_margin=-1.993460 grad_norm=2176.000000 embed_norm=2.890625 delta_norm=1.523438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=15/20 loss=0.677764 reward_margin=0.030994 grad_norm=1080.000000 embed_norm=2.906250 delta_norm=1.531250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=16/20 loss=0.853486 reward_margin=-0.298471 grad_norm=1128.000000 embed_norm=2.906250 delta_norm=1.546875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=17/20 loss=1.010547 reward_margin=-0.557968 grad_norm=1144.000000 embed_norm=2.906250 delta_norm=1.554688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=18/20 loss=1.223962 reward_margin=-0.875751 grad_norm=1504.000000 embed_norm=2.921875 delta_norm=1.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=19/20 loss=1.325390 reward_margin=-1.016574 grad_norm=1152.000000 embed_norm=2.921875 delta_norm=1.570312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=5 inner_step=20/20 loss=1.351234 reward_margin=-1.051584 grad_norm=1488.000000 embed_norm=2.921875 delta_norm=1.578125
+1|5|Loss: 0.7470144033432007:  30%|███       | 6/20 [00:38<01:28,  6.29s/it]1|6|Loss: 0.5785089731216431:  30%|███       | 6/20 [00:38<01:28,  6.29s/it]                                                                            
+1|6|Loss: 0.5785089731216431:  30%|███       | 6/20 [00:38<01:28,  6.29s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=1/20 loss=0.457506 reward_margin=0.544507 grad_norm=676.000000 embed_norm=2.921875 delta_norm=1.585938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=2/20 loss=0.738957 reward_margin=-0.089612 grad_norm=504.000000 embed_norm=2.937500 delta_norm=1.585938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=3/20 loss=0.508920 reward_margin=0.410233 grad_norm=446.000000 embed_norm=2.937500 delta_norm=1.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=4/20 loss=0.955503 reward_margin=-0.469987 grad_norm=1168.000000 embed_norm=2.937500 delta_norm=1.601562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=5/20 loss=0.786224 reward_margin=-0.178223 grad_norm=600.000000 embed_norm=2.937500 delta_norm=1.601562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=6/20 loss=0.631781 reward_margin=0.126738 grad_norm=524.000000 embed_norm=2.937500 delta_norm=1.609375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=7/20 loss=0.889216 reward_margin=-0.359932 grad_norm=672.000000 embed_norm=2.953125 delta_norm=1.617188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=8/20 loss=0.851210 reward_margin=-0.294526 grad_norm=442.000000 embed_norm=2.953125 delta_norm=1.625000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=9/20 loss=0.910190 reward_margin=-0.395280 grad_norm=524.000000 embed_norm=2.953125 delta_norm=1.632812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=10/20 loss=0.740086 reward_margin=-0.091771 grad_norm=424.000000 embed_norm=2.968750 delta_norm=1.640625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=11/20 loss=0.953472 reward_margin=-0.466690 grad_norm=528.000000 embed_norm=2.968750 delta_norm=1.656250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=12/20 loss=0.557333 reward_margin=0.293020 grad_norm=528.000000 embed_norm=2.968750 delta_norm=1.664062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=13/20 loss=0.445136 reward_margin=0.578568 grad_norm=378.000000 embed_norm=2.984375 delta_norm=1.671875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=14/20 loss=0.541773 reward_margin=0.329825 grad_norm=660.000000 embed_norm=2.984375 delta_norm=1.679688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=15/20 loss=0.749831 reward_margin=-0.110329 grad_norm=568.000000 embed_norm=2.984375 delta_norm=1.687500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=16/20 loss=1.048635 reward_margin=-0.617215 grad_norm=1168.000000 embed_norm=3.000000 delta_norm=1.695312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=17/20 loss=0.616598 reward_margin=0.159454 grad_norm=512.000000 embed_norm=3.000000 delta_norm=1.703125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=18/20 loss=0.806166 reward_margin=-0.214569 grad_norm=748.000000 embed_norm=3.015625 delta_norm=1.710938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=19/20 loss=0.652750 reward_margin=0.082495 grad_norm=478.000000 embed_norm=3.015625 delta_norm=1.726562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=6 inner_step=20/20 loss=0.645998 reward_margin=0.096631 grad_norm=508.000000 embed_norm=3.015625 delta_norm=1.734375
+1|6|Loss: 0.5785089731216431:  35%|███▌      | 7/20 [00:44<01:21,  6.23s/it]1|7|Loss: 0.2936127781867981:  35%|███▌      | 7/20 [00:44<01:21,  6.23s/it]                                                                            
+1|7|Loss: 0.2936127781867981:  35%|███▌      | 7/20 [00:44<01:21,  6.23s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=1/20 loss=0.001174 reward_margin=6.746973 grad_norm=11.687500 embed_norm=3.015625 delta_norm=1.734375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=2/20 loss=0.000000 reward_margin=16.707397 grad_norm=0.001022 embed_norm=3.015625 delta_norm=1.734375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=3/20 loss=0.000022 reward_margin=10.717773 grad_norm=0.431641 embed_norm=3.031250 delta_norm=1.742188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=4/20 loss=3.491476 reward_margin=-3.460547 grad_norm=18432.000000 embed_norm=3.031250 delta_norm=1.742188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=5/20 loss=0.005011 reward_margin=5.293494 grad_norm=120.000000 embed_norm=3.031250 delta_norm=1.750000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=6/20 loss=3.461004 reward_margin=-3.429126 grad_norm=27392.000000 embed_norm=3.031250 delta_norm=1.750000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=7/20 loss=8.698214 reward_margin=-8.698120 grad_norm=21376.000000 embed_norm=3.031250 delta_norm=1.757812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=8/20 loss=8.739418 reward_margin=-8.739209 grad_norm=19584.000000 embed_norm=3.031250 delta_norm=1.765625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=9/20 loss=1.471548 reward_margin=-1.210791 grad_norm=12224.000000 embed_norm=3.046875 delta_norm=1.773438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=10/20 loss=0.002793 reward_margin=5.879297 grad_norm=47.750000 embed_norm=3.046875 delta_norm=1.773438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=11/20 loss=0.492109 reward_margin=0.452954 grad_norm=14848.000000 embed_norm=3.046875 delta_norm=1.781250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=12/20 loss=2.018522 reward_margin=-1.876135 grad_norm=17408.000000 embed_norm=3.062500 delta_norm=1.789062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=13/20 loss=10.450028 reward_margin=-10.449987 grad_norm=13184.000000 embed_norm=3.062500 delta_norm=1.804688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=14/20 loss=12.895706 reward_margin=-12.895777 grad_norm=14208.000000 embed_norm=3.062500 delta_norm=1.812500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=15/20 loss=11.189466 reward_margin=-11.189428 grad_norm=14272.000000 embed_norm=3.078125 delta_norm=1.820312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=16/20 loss=8.001898 reward_margin=-8.001502 grad_norm=12288.000000 embed_norm=3.078125 delta_norm=1.828125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=17/20 loss=7.356498 reward_margin=-7.355969 grad_norm=15872.000000 embed_norm=3.078125 delta_norm=1.835938
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=18/20 loss=3.415067 reward_margin=-3.381757 grad_norm=18432.000000 embed_norm=3.093750 delta_norm=1.851562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=19/20 loss=7.402563 reward_margin=-7.401629 grad_norm=24704.000000 embed_norm=3.093750 delta_norm=1.859375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=7 inner_step=20/20 loss=7.756288 reward_margin=-7.756140 grad_norm=28672.000000 embed_norm=3.109375 delta_norm=1.867188
+1|7|Loss: 0.2936127781867981:  40%|████      | 8/20 [00:50<01:15,  6.28s/it]1|8|Loss: 0.0012044936884194613:  40%|████      | 8/20 [00:50<01:15,  6.28s/it]                                                                               
+1|8|Loss: 0.0012044936884194613:  40%|████      | 8/20 [00:50<01:15,  6.28s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=1/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=2/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=3/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=4/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=5/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=6/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=7/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=8/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=9/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=10/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=11/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=12/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=13/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=14/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=15/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=16/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=17/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=18/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=19/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=8 inner_step=20/20 loss=0.000000 reward_margin=39.986427 grad_norm=0.000000 embed_norm=3.109375 delta_norm=1.867188
+1|8|Loss: 0.0012044936884194613:  45%|████▌     | 9/20 [00:57<01:09,  6.31s/it]1|9|Loss: 33.22675704956055:  45%|████▌     | 9/20 [00:57<01:09,  6.31s/it]                                                                               
+1|9|Loss: 33.22675704956055:  45%|████▌     | 9/20 [00:57<01:09,  6.31s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=1/20 loss=0.000046 reward_margin=9.983594 grad_norm=2.093750 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=2/20 loss=4.775850 reward_margin=-4.767382 grad_norm=22912.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=3/20 loss=6.524320 reward_margin=-6.522852 grad_norm=14784.000000 embed_norm=3.109375 delta_norm=1.867188
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=4/20 loss=16.603418 reward_margin=-16.603418 grad_norm=22272.000000 embed_norm=3.109375 delta_norm=1.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=5/20 loss=2.519025 reward_margin=-2.435034 grad_norm=18048.000000 embed_norm=3.109375 delta_norm=1.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=6/20 loss=5.863003 reward_margin=-5.860156 grad_norm=19200.000000 embed_norm=3.109375 delta_norm=1.882812
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=7/20 loss=20.486231 reward_margin=-20.486231 grad_norm=16512.000000 embed_norm=3.125000 delta_norm=1.890625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=8/20 loss=17.080078 reward_margin=-17.080103 grad_norm=17408.000000 embed_norm=3.125000 delta_norm=1.898438
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=9/20 loss=9.860600 reward_margin=-9.860571 grad_norm=18048.000000 embed_norm=3.125000 delta_norm=1.906250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=10/20 loss=11.668368 reward_margin=-11.668310 grad_norm=18816.000000 embed_norm=3.140625 delta_norm=1.914062
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=11/20 loss=13.415822 reward_margin=-13.415796 grad_norm=16128.000000 embed_norm=3.140625 delta_norm=1.921875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=12/20 loss=0.051947 reward_margin=2.931446 grad_norm=788.000000 embed_norm=3.140625 delta_norm=1.929688
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=13/20 loss=10.097893 reward_margin=-10.097900 grad_norm=19968.000000 embed_norm=3.156250 delta_norm=1.937500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=14/20 loss=11.361926 reward_margin=-11.361841 grad_norm=16896.000000 embed_norm=3.156250 delta_norm=1.945312
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=15/20 loss=12.914065 reward_margin=-12.913942 grad_norm=15872.000000 embed_norm=3.156250 delta_norm=1.953125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=16/20 loss=13.370315 reward_margin=-13.370411 grad_norm=16320.000000 embed_norm=3.171875 delta_norm=1.968750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=17/20 loss=12.355083 reward_margin=-12.355176 grad_norm=13888.000000 embed_norm=3.171875 delta_norm=1.976562
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=18/20 loss=5.404895 reward_margin=-5.400378 grad_norm=15296.000000 embed_norm=3.187500 delta_norm=1.984375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=19/20 loss=15.158203 reward_margin=-15.158435 grad_norm=19968.000000 embed_norm=3.187500 delta_norm=2.000000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=9 inner_step=20/20 loss=5.958057 reward_margin=-5.955408 grad_norm=22016.000000 embed_norm=3.203125 delta_norm=2.015625
+1|9|Loss: 33.22675704956055:  50%|█████     | 10/20 [01:03<01:03,  6.32s/it]1|10|Loss: 0.652223527431488:  50%|█████     | 10/20 [01:03<01:03,  6.32s/it]                                                                             
+1|10|Loss: 0.652223527431488:  50%|█████     | 10/20 [01:03<01:03,  6.32s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=1/20 loss=10.817501 reward_margin=-10.817481 grad_norm=22528.000000 embed_norm=3.203125 delta_norm=2.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=2/20 loss=0.459115 reward_margin=0.540131 grad_norm=3776.000000 embed_norm=3.203125 delta_norm=2.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=3/20 loss=0.887832 reward_margin=-0.357574 grad_norm=2896.000000 embed_norm=3.203125 delta_norm=2.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=4/20 loss=1.263497 reward_margin=-0.931287 grad_norm=2688.000000 embed_norm=3.203125 delta_norm=2.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=5/20 loss=0.578300 reward_margin=0.244617 grad_norm=1472.000000 embed_norm=3.203125 delta_norm=2.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=6/20 loss=0.870757 reward_margin=-0.328378 grad_norm=1888.000000 embed_norm=3.203125 delta_norm=2.015625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=7/20 loss=0.280803 reward_margin=1.126416 grad_norm=704.000000 embed_norm=3.203125 delta_norm=2.031250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=8/20 loss=1.150078 reward_margin=-0.769388 grad_norm=1920.000000 embed_norm=3.203125 delta_norm=2.031250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=9/20 loss=0.296811 reward_margin=1.062585 grad_norm=652.000000 embed_norm=3.203125 delta_norm=2.031250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=10/20 loss=2.400129 reward_margin=-2.305042 grad_norm=2112.000000 embed_norm=3.218750 delta_norm=2.031250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=11/20 loss=0.524133 reward_margin=0.372519 grad_norm=872.000000 embed_norm=3.218750 delta_norm=2.046875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=12/20 loss=0.280164 reward_margin=1.129044 grad_norm=664.000000 embed_norm=3.218750 delta_norm=2.046875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=13/20 loss=0.628409 reward_margin=0.133963 grad_norm=1192.000000 embed_norm=3.218750 delta_norm=2.046875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=14/20 loss=1.240095 reward_margin=-0.898511 grad_norm=3696.000000 embed_norm=3.218750 delta_norm=2.046875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=15/20 loss=0.957461 reward_margin=-0.473175 grad_norm=1960.000000 embed_norm=3.218750 delta_norm=2.046875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=16/20 loss=1.124587 reward_margin=-0.731863 grad_norm=1928.000000 embed_norm=3.218750 delta_norm=2.062500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=17/20 loss=0.531497 reward_margin=0.354559 grad_norm=1020.000000 embed_norm=3.234375 delta_norm=2.062500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=18/20 loss=1.191236 reward_margin=-0.829034 grad_norm=2008.000000 embed_norm=3.234375 delta_norm=2.062500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=19/20 loss=0.624544 reward_margin=0.142261 grad_norm=1672.000000 embed_norm=3.234375 delta_norm=2.062500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=10 inner_step=20/20 loss=0.666985 reward_margin=0.053021 grad_norm=968.000000 embed_norm=3.234375 delta_norm=2.078125
+1|10|Loss: 0.652223527431488:  55%|█████▌    | 11/20 [01:09<00:56,  6.26s/it]1|11|Loss: 0.5329079627990723:  55%|█████▌    | 11/20 [01:09<00:56,  6.26s/it]                                                                              
+1|11|Loss: 0.5329079627990723:  55%|█████▌    | 11/20 [01:09<00:56,  6.26s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=1/20 loss=0.454555 reward_margin=0.552563 grad_norm=4416.000000 embed_norm=3.234375 delta_norm=2.078125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=2/20 loss=5.355126 reward_margin=-5.350379 grad_norm=31232.000000 embed_norm=3.234375 delta_norm=2.078125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=3/20 loss=0.094321 reward_margin=2.313501 grad_norm=1864.000000 embed_norm=3.234375 delta_norm=2.078125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=4/20 loss=2.698442 reward_margin=-2.628747 grad_norm=7936.000000 embed_norm=3.234375 delta_norm=2.078125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=5/20 loss=1.916634 reward_margin=-1.757510 grad_norm=5856.000000 embed_norm=3.250000 delta_norm=2.093750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=6/20 loss=0.408103 reward_margin=0.685193 grad_norm=1752.000000 embed_norm=3.250000 delta_norm=2.093750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=7/20 loss=1.641860 reward_margin=-1.426651 grad_norm=4192.000000 embed_norm=3.250000 delta_norm=2.093750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=8/20 loss=2.445015 reward_margin=-2.354314 grad_norm=3904.000000 embed_norm=3.250000 delta_norm=2.109375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=9/20 loss=3.449749 reward_margin=-3.417522 grad_norm=3984.000000 embed_norm=3.250000 delta_norm=2.109375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=10/20 loss=3.371278 reward_margin=-3.336290 grad_norm=3408.000000 embed_norm=3.265625 delta_norm=2.109375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=11/20 loss=3.639697 reward_margin=-3.613019 grad_norm=3392.000000 embed_norm=3.265625 delta_norm=2.125000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=12/20 loss=1.254590 reward_margin=-0.918874 grad_norm=2208.000000 embed_norm=3.265625 delta_norm=2.125000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=13/20 loss=2.189027 reward_margin=-2.070264 grad_norm=2848.000000 embed_norm=3.281250 delta_norm=2.140625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=14/20 loss=1.297317 reward_margin=-0.978128 grad_norm=2320.000000 embed_norm=3.281250 delta_norm=2.140625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=15/20 loss=1.679988 reward_margin=-1.473701 grad_norm=2432.000000 embed_norm=3.281250 delta_norm=2.156250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=16/20 loss=2.526750 reward_margin=-2.443500 grad_norm=3232.000000 embed_norm=3.296875 delta_norm=2.171875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=17/20 loss=2.457866 reward_margin=-2.368445 grad_norm=2864.000000 embed_norm=3.296875 delta_norm=2.171875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=18/20 loss=1.396434 reward_margin=-1.112082 grad_norm=1976.000000 embed_norm=3.312500 delta_norm=2.187500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=19/20 loss=1.550152 reward_margin=-1.311591 grad_norm=2560.000000 embed_norm=3.312500 delta_norm=2.187500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=11 inner_step=20/20 loss=0.930066 reward_margin=-0.428319 grad_norm=1584.000000 embed_norm=3.312500 delta_norm=2.203125
+1|11|Loss: 0.5329079627990723:  60%|██████    | 12/20 [01:15<00:49,  6.20s/it]1|12|Loss: 0.13527682423591614:  60%|██████    | 12/20 [01:15<00:49,  6.20s/it]                                                                               
+1|12|Loss: 0.13527682423591614:  60%|██████    | 12/20 [01:15<00:49,  6.20s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=1/20 loss=1.794963 reward_margin=-1.613281 grad_norm=19456.000000 embed_norm=3.312500 delta_norm=2.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=2/20 loss=0.110910 reward_margin=2.143066 grad_norm=2288.000000 embed_norm=3.312500 delta_norm=2.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=3/20 loss=0.000000 reward_margin=14.664551 grad_norm=0.008118 embed_norm=3.312500 delta_norm=2.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=4/20 loss=0.151159 reward_margin=1.812891 grad_norm=2560.000000 embed_norm=3.328125 delta_norm=2.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=5/20 loss=0.002532 reward_margin=5.977637 grad_norm=40.000000 embed_norm=3.328125 delta_norm=2.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=6/20 loss=0.000181 reward_margin=8.618408 grad_norm=3.234375 embed_norm=3.328125 delta_norm=2.203125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=7/20 loss=1.209220 reward_margin=-0.854785 grad_norm=13952.000000 embed_norm=3.328125 delta_norm=2.218750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=8/20 loss=0.004095 reward_margin=5.495923 grad_norm=57.250000 embed_norm=3.328125 delta_norm=2.218750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=9/20 loss=11.133120 reward_margin=-11.133179 grad_norm=16640.000000 embed_norm=3.328125 delta_norm=2.218750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=10/20 loss=0.095786 reward_margin=2.297363 grad_norm=936.000000 embed_norm=3.328125 delta_norm=2.218750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=11/20 loss=0.066731 reward_margin=2.673548 grad_norm=1104.000000 embed_norm=3.343750 delta_norm=2.234375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=12/20 loss=13.708009 reward_margin=-13.708020 grad_norm=22784.000000 embed_norm=3.343750 delta_norm=2.234375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=13/20 loss=0.535971 reward_margin=0.343714 grad_norm=4016.000000 embed_norm=3.343750 delta_norm=2.234375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=14/20 loss=3.528044 reward_margin=-3.498242 grad_norm=11456.000000 embed_norm=3.343750 delta_norm=2.250000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=15/20 loss=0.341549 reward_margin=0.898560 grad_norm=2800.000000 embed_norm=3.359375 delta_norm=2.250000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=16/20 loss=9.742833 reward_margin=-9.742762 grad_norm=10816.000000 embed_norm=3.359375 delta_norm=2.265625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=17/20 loss=1.578493 reward_margin=-1.347461 grad_norm=6784.000000 embed_norm=3.375000 delta_norm=2.265625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=18/20 loss=0.328649 reward_margin=0.943903 grad_norm=1992.000000 embed_norm=3.375000 delta_norm=2.281250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=19/20 loss=0.019835 reward_margin=3.910291 grad_norm=140.000000 embed_norm=3.375000 delta_norm=2.281250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=12 inner_step=20/20 loss=1.315833 reward_margin=-1.003564 grad_norm=6336.000000 embed_norm=3.390625 delta_norm=2.296875
+1|12|Loss: 0.13527682423591614:  65%|██████▌   | 13/20 [01:22<00:43,  6.26s/it]1|13|Loss: 0.03812894970178604:  65%|██████▌   | 13/20 [01:22<00:43,  6.26s/it]                                                                               
+1|13|Loss: 0.03812894970178604:  65%|██████▌   | 13/20 [01:22<00:43,  6.26s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=1/20 loss=0.208636 reward_margin=1.461035 grad_norm=3808.000000 embed_norm=3.390625 delta_norm=2.296875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=2/20 loss=6.427984 reward_margin=-6.426367 grad_norm=14784.000000 embed_norm=3.390625 delta_norm=2.296875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=3/20 loss=0.028804 reward_margin=3.532837 grad_norm=510.000000 embed_norm=3.390625 delta_norm=2.312500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=4/20 loss=0.041835 reward_margin=3.153101 grad_norm=756.000000 embed_norm=3.406250 delta_norm=2.312500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=5/20 loss=0.002999 reward_margin=5.807983 grad_norm=53.500000 embed_norm=3.406250 delta_norm=2.312500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=6/20 loss=0.058111 reward_margin=2.816236 grad_norm=972.000000 embed_norm=3.406250 delta_norm=2.328125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=7/20 loss=1.217868 reward_margin=-0.867078 grad_norm=11968.000000 embed_norm=3.406250 delta_norm=2.328125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=8/20 loss=0.500822 reward_margin=0.430640 grad_norm=4672.000000 embed_norm=3.421875 delta_norm=2.328125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=9/20 loss=0.404679 reward_margin=0.695447 grad_norm=3680.000000 embed_norm=3.421875 delta_norm=2.343750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=10/20 loss=0.042193 reward_margin=3.144464 grad_norm=568.000000 embed_norm=3.421875 delta_norm=2.343750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=11/20 loss=0.421598 reward_margin=0.645581 grad_norm=5152.000000 embed_norm=3.437500 delta_norm=2.359375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=12/20 loss=0.410300 reward_margin=0.678595 grad_norm=3488.000000 embed_norm=3.437500 delta_norm=2.359375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=13/20 loss=4.275911 reward_margin=-4.261878 grad_norm=8128.000000 embed_norm=3.437500 delta_norm=2.375000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=14/20 loss=4.890941 reward_margin=-4.883399 grad_norm=6176.000000 embed_norm=3.453125 delta_norm=2.375000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=15/20 loss=0.795136 reward_margin=-0.194501 grad_norm=3104.000000 embed_norm=3.453125 delta_norm=2.390625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=16/20 loss=3.525769 reward_margin=-3.495838 grad_norm=5792.000000 embed_norm=3.468750 delta_norm=2.406250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=17/20 loss=1.551768 reward_margin=-1.313681 grad_norm=4768.000000 embed_norm=3.468750 delta_norm=2.406250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=18/20 loss=2.010736 reward_margin=-1.867148 grad_norm=4080.000000 embed_norm=3.484375 delta_norm=2.421875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=19/20 loss=6.090938 reward_margin=-6.088651 grad_norm=5952.000000 embed_norm=3.500000 delta_norm=2.437500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=13 inner_step=20/20 loss=8.200861 reward_margin=-8.200754 grad_norm=4608.000000 embed_norm=3.500000 delta_norm=2.437500
+1|13|Loss: 0.03812894970178604:  70%|███████   | 14/20 [01:28<00:37,  6.22s/it]1|14|Loss: 0.03425197675824165:  70%|███████   | 14/20 [01:28<00:37,  6.22s/it]                                                                               
+1|14|Loss: 0.03425197675824165:  70%|███████   | 14/20 [01:28<00:37,  6.22s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=1/20 loss=0.019042 reward_margin=3.951563 grad_norm=1808.000000 embed_norm=3.500000 delta_norm=2.437500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=2/20 loss=13.928322 reward_margin=-13.928321 grad_norm=21504.000000 embed_norm=3.500000 delta_norm=2.437500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=3/20 loss=14.499024 reward_margin=-14.499023 grad_norm=21376.000000 embed_norm=3.500000 delta_norm=2.437500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=4/20 loss=0.003762 reward_margin=5.581055 grad_norm=132.000000 embed_norm=3.500000 delta_norm=2.437500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=5/20 loss=15.964063 reward_margin=-15.964063 grad_norm=35840.000000 embed_norm=3.500000 delta_norm=2.437500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=6/20 loss=0.000000 reward_margin=18.037306 grad_norm=0.000488 embed_norm=3.515625 delta_norm=2.453125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=7/20 loss=28.143946 reward_margin=-28.143801 grad_norm=49920.000000 embed_norm=3.515625 delta_norm=2.453125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=8/20 loss=8.923181 reward_margin=-8.923169 grad_norm=32000.000000 embed_norm=3.515625 delta_norm=2.453125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=9/20 loss=11.110562 reward_margin=-11.110583 grad_norm=30080.000000 embed_norm=3.515625 delta_norm=2.468750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=10/20 loss=0.000053 reward_margin=9.849977 grad_norm=1.070312 embed_norm=3.531250 delta_norm=2.468750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=11/20 loss=14.794922 reward_margin=-14.795094 grad_norm=20864.000000 embed_norm=3.531250 delta_norm=2.468750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=12/20 loss=9.015746 reward_margin=-9.015479 grad_norm=20864.000000 embed_norm=3.531250 delta_norm=2.484375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=13/20 loss=22.924610 reward_margin=-22.924463 grad_norm=19840.000000 embed_norm=3.546875 delta_norm=2.500000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=14/20 loss=8.084683 reward_margin=-8.084167 grad_norm=17408.000000 embed_norm=3.546875 delta_norm=2.500000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=15/20 loss=12.217193 reward_margin=-12.217382 grad_norm=13632.000000 embed_norm=3.562500 delta_norm=2.515625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=16/20 loss=10.340657 reward_margin=-10.340772 grad_norm=16896.000000 embed_norm=3.562500 delta_norm=2.531250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=17/20 loss=4.365910 reward_margin=-4.353149 grad_norm=12480.000000 embed_norm=3.578125 delta_norm=2.531250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=18/20 loss=15.241797 reward_margin=-15.241920 grad_norm=14016.000000 embed_norm=3.593750 delta_norm=2.546875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=19/20 loss=3.945316 reward_margin=-3.926062 grad_norm=10560.000000 embed_norm=3.593750 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=14 inner_step=20/20 loss=3.779734 reward_margin=-3.756567 grad_norm=13312.000000 embed_norm=3.609375 delta_norm=2.578125
+1|14|Loss: 0.03425197675824165:  75%|███████▌  | 15/20 [01:34<00:31,  6.27s/it]1|15|Loss: 0.03190787136554718:  75%|███████▌  | 15/20 [01:34<00:31,  6.27s/it]                                                                               
+1|15|Loss: 0.03190787136554718:  75%|███████▌  | 15/20 [01:34<00:31,  6.27s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=1/20 loss=21.958984 reward_margin=-21.958984 grad_norm=30592.000000 embed_norm=3.609375 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=2/20 loss=4.549846 reward_margin=-4.539221 grad_norm=16640.000000 embed_norm=3.609375 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=3/20 loss=0.523093 reward_margin=0.375073 grad_norm=744.000000 embed_norm=3.593750 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=4/20 loss=0.499000 reward_margin=0.435295 grad_norm=516.000000 embed_norm=3.593750 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=5/20 loss=0.768215 reward_margin=-0.144894 grad_norm=872.000000 embed_norm=3.593750 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=6/20 loss=0.659911 reward_margin=0.067612 grad_norm=900.000000 embed_norm=3.593750 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=7/20 loss=0.943868 reward_margin=-0.451013 grad_norm=1144.000000 embed_norm=3.609375 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=8/20 loss=1.212185 reward_margin=-0.859009 grad_norm=1192.000000 embed_norm=3.609375 delta_norm=2.562500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=9/20 loss=0.410543 reward_margin=0.677991 grad_norm=442.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=10/20 loss=1.218070 reward_margin=-0.867377 grad_norm=848.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=11/20 loss=1.152999 reward_margin=-0.773657 grad_norm=888.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=12/20 loss=0.610290 reward_margin=0.173206 grad_norm=604.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=13/20 loss=0.609537 reward_margin=0.174854 grad_norm=672.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=14/20 loss=0.830971 reward_margin=-0.258933 grad_norm=636.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=15/20 loss=0.938240 reward_margin=-0.441785 grad_norm=544.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=16/20 loss=1.228609 reward_margin=-0.882309 grad_norm=712.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=17/20 loss=1.655901 reward_margin=-1.444043 grad_norm=932.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=18/20 loss=1.082729 reward_margin=-0.669226 grad_norm=808.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=19/20 loss=0.953965 reward_margin=-0.467490 grad_norm=688.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=15 inner_step=20/20 loss=0.873755 reward_margin=-0.333533 grad_norm=480.000000 embed_norm=3.609375 delta_norm=2.578125
+1|15|Loss: 0.03190787136554718:  80%|████████  | 16/20 [01:40<00:24,  6.25s/it]1|16|Loss: 0.5742937326431274:  80%|████████  | 16/20 [01:40<00:24,  6.25s/it]                                                                               
+1|16|Loss: 0.5742937326431274:  80%|████████  | 16/20 [01:40<00:24,  6.25s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=1/20 loss=17.444983 reward_margin=-17.444979 grad_norm=26112.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=2/20 loss=0.963781 reward_margin=-0.483409 grad_norm=506.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=3/20 loss=0.872964 reward_margin=-0.332174 grad_norm=396.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=4/20 loss=0.549761 reward_margin=0.310831 grad_norm=278.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=5/20 loss=0.620936 reward_margin=0.150045 grad_norm=376.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=6/20 loss=0.511971 reward_margin=0.402603 grad_norm=342.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=7/20 loss=0.658245 reward_margin=0.071066 grad_norm=374.000000 embed_norm=3.609375 delta_norm=2.578125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=8/20 loss=0.702423 reward_margin=-0.018468 grad_norm=402.000000 embed_norm=3.609375 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=9/20 loss=0.724631 reward_margin=-0.062006 grad_norm=372.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=10/20 loss=0.663906 reward_margin=0.059363 grad_norm=258.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=11/20 loss=0.833017 reward_margin=-0.262554 grad_norm=260.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=12/20 loss=0.810277 reward_margin=-0.221965 grad_norm=234.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=13/20 loss=0.744921 reward_margin=-0.100999 grad_norm=202.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=14/20 loss=0.784190 reward_margin=-0.174484 grad_norm=207.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=15/20 loss=0.724443 reward_margin=-0.061641 grad_norm=175.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=16/20 loss=0.709248 reward_margin=-0.031946 grad_norm=158.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=17/20 loss=0.760178 reward_margin=-0.129849 grad_norm=169.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=18/20 loss=0.652611 reward_margin=0.082786 grad_norm=151.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=19/20 loss=0.818745 reward_margin=-0.237165 grad_norm=183.000000 embed_norm=3.625000 delta_norm=2.593750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=16 inner_step=20/20 loss=0.770055 reward_margin=-0.148322 grad_norm=159.000000 embed_norm=3.625000 delta_norm=2.593750
+1|16|Loss: 0.5742937326431274:  85%|████████▌ | 17/20 [01:47<00:18,  6.32s/it]1|17|Loss: 0.5944274663925171:  85%|████████▌ | 17/20 [01:47<00:18,  6.32s/it]                                                                              
+1|17|Loss: 0.5944274663925171:  85%|████████▌ | 17/20 [01:47<00:18,  6.32s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=1/20 loss=0.002067 reward_margin=6.180565 grad_norm=17.625000 embed_norm=3.625000 delta_norm=2.609375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=2/20 loss=0.548292 reward_margin=0.314294 grad_norm=3936.000000 embed_norm=3.625000 delta_norm=2.609375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=3/20 loss=0.014975 reward_margin=4.193848 grad_norm=205.000000 embed_norm=3.625000 delta_norm=2.609375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=4/20 loss=0.000004 reward_margin=12.518360 grad_norm=0.062988 embed_norm=3.640625 delta_norm=2.609375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=5/20 loss=2.176897 reward_margin=-2.056531 grad_norm=15168.000000 embed_norm=3.640625 delta_norm=2.625000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=6/20 loss=0.999187 reward_margin=-0.540051 grad_norm=23168.000000 embed_norm=3.640625 delta_norm=2.625000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=7/20 loss=2.998975 reward_margin=-2.947852 grad_norm=17024.000000 embed_norm=3.640625 delta_norm=2.625000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=8/20 loss=24.011524 reward_margin=-24.011694 grad_norm=41728.000000 embed_norm=3.640625 delta_norm=2.640625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=9/20 loss=0.000002 reward_margin=13.061878 grad_norm=0.110840 embed_norm=3.656250 delta_norm=2.640625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=10/20 loss=0.001220 reward_margin=6.708606 grad_norm=143.000000 embed_norm=3.656250 delta_norm=2.640625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=11/20 loss=0.115349 reward_margin=2.101611 grad_norm=3968.000000 embed_norm=3.656250 delta_norm=2.656250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=12/20 loss=1.278224 reward_margin=-0.951684 grad_norm=35840.000000 embed_norm=3.671875 delta_norm=2.656250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=13/20 loss=0.000141 reward_margin=8.865039 grad_norm=2.843750 embed_norm=3.671875 delta_norm=2.671875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=14/20 loss=13.095901 reward_margin=-13.095899 grad_norm=17920.000000 embed_norm=3.671875 delta_norm=2.671875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=15/20 loss=13.427541 reward_margin=-13.427686 grad_norm=25216.000000 embed_norm=3.671875 delta_norm=2.671875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=16/20 loss=19.264845 reward_margin=-19.264843 grad_norm=32512.000000 embed_norm=3.687500 delta_norm=2.687500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=17/20 loss=0.923576 reward_margin=-0.417578 grad_norm=17792.000000 embed_norm=3.687500 delta_norm=2.687500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=18/20 loss=12.153131 reward_margin=-12.153125 grad_norm=25600.000000 embed_norm=3.703125 delta_norm=2.703125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=19/20 loss=0.065637 reward_margin=2.690625 grad_norm=2128.000000 embed_norm=3.703125 delta_norm=2.703125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=17 inner_step=20/20 loss=18.858984 reward_margin=-18.858961 grad_norm=49920.000000 embed_norm=3.703125 delta_norm=2.718750
+1|17|Loss: 0.5944274663925171:  90%|█████████ | 18/20 [01:53<00:12,  6.32s/it]1|18|Loss: 6.71731831971556e-05:  90%|█████████ | 18/20 [01:53<00:12,  6.32s/it]                                                                                
+1|18|Loss: 6.71731831971556e-05:  90%|█████████ | 18/20 [01:53<00:12,  6.32s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=1/20 loss=1.412349 reward_margin=-1.133203 grad_norm=1176.000000 embed_norm=3.718750 delta_norm=2.718750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=2/20 loss=0.603033 reward_margin=0.189160 grad_norm=648.000000 embed_norm=3.718750 delta_norm=2.734375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=3/20 loss=1.178457 reward_margin=-0.810645 grad_norm=1128.000000 embed_norm=3.718750 delta_norm=2.734375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=4/20 loss=0.793209 reward_margin=-0.191016 grad_norm=544.000000 embed_norm=3.734375 delta_norm=2.750000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=5/20 loss=0.653722 reward_margin=0.080469 grad_norm=580.000000 embed_norm=3.734375 delta_norm=2.750000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=6/20 loss=0.563723 reward_margin=0.278125 grad_norm=524.000000 embed_norm=3.734375 delta_norm=2.765625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=7/20 loss=0.643910 reward_margin=0.101025 grad_norm=536.000000 embed_norm=3.750000 delta_norm=2.765625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=8/20 loss=0.737752 reward_margin=-0.087305 grad_norm=672.000000 embed_norm=3.750000 delta_norm=2.781250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=9/20 loss=1.275232 reward_margin=-0.947607 grad_norm=972.000000 embed_norm=3.765625 delta_norm=2.781250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=10/20 loss=0.100954 reward_margin=2.242188 grad_norm=280.000000 embed_norm=3.765625 delta_norm=2.796875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=11/20 loss=2.047887 reward_margin=-1.909766 grad_norm=4864.000000 embed_norm=3.781250 delta_norm=2.796875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=12/20 loss=2.571469 reward_margin=-2.491968 grad_norm=9664.000000 embed_norm=3.781250 delta_norm=2.812500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=13/20 loss=1.237130 reward_margin=-0.894336 grad_norm=3696.000000 embed_norm=3.781250 delta_norm=2.812500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=14/20 loss=2.709149 reward_margin=-2.640234 grad_norm=8032.000000 embed_norm=3.796875 delta_norm=2.828125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=15/20 loss=2.790366 reward_margin=-2.727002 grad_norm=6560.000000 embed_norm=3.796875 delta_norm=2.828125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=16/20 loss=1.722842 reward_margin=-1.526160 grad_norm=1576.000000 embed_norm=3.796875 delta_norm=2.843750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=17/20 loss=0.771745 reward_margin=-0.151459 grad_norm=1928.000000 embed_norm=3.812500 delta_norm=2.843750
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=18/20 loss=1.961553 reward_margin=-1.809979 grad_norm=4512.000000 embed_norm=3.812500 delta_norm=2.859375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=19/20 loss=1.023044 reward_margin=-0.577533 grad_norm=2176.000000 embed_norm=3.828125 delta_norm=2.859375
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=18 inner_step=20/20 loss=1.241379 reward_margin=-0.900302 grad_norm=964.000000 embed_norm=3.828125 delta_norm=2.875000
+1|18|Loss: 6.71731831971556e-05:  95%|█████████▌| 19/20 [01:59<00:06,  6.29s/it]1|19|Loss: 0.6117799282073975:  95%|█████████▌| 19/20 [01:59<00:06,  6.29s/it]                                                                                
+1|19|Loss: 0.6117799282073975:  95%|█████████▌| 19/20 [01:59<00:06,  6.29s/it]INFO:torchtune.utils._logging:Attacker optimizer is initialized.
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=1/20 loss=0.003084 reward_margin=5.780079 grad_norm=78.000000 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=2/20 loss=19.653711 reward_margin=-19.653711 grad_norm=26752.000000 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=3/20 loss=0.122014 reward_margin=2.041992 grad_norm=3296.000000 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=4/20 loss=0.000002 reward_margin=13.350389 grad_norm=0.061523 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=5/20 loss=0.649467 reward_margin=0.089355 grad_norm=14400.000000 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=6/20 loss=10.949822 reward_margin=-10.949804 grad_norm=29952.000000 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=7/20 loss=6.238478 reward_margin=-6.236352 grad_norm=26112.000000 embed_norm=3.828125 delta_norm=2.875000
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=8/20 loss=0.000001 reward_margin=14.332006 grad_norm=0.013123 embed_norm=3.843750 delta_norm=2.890625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=9/20 loss=4.049326 reward_margin=-4.031738 grad_norm=221184.000000 embed_norm=3.843750 delta_norm=2.890625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=10/20 loss=15.218750 reward_margin=-15.218750 grad_norm=18560.000000 embed_norm=3.843750 delta_norm=2.890625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=11/20 loss=7.325854 reward_margin=-7.325098 grad_norm=25600.000000 embed_norm=3.843750 delta_norm=2.890625
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=12/20 loss=0.117539 reward_margin=2.081690 grad_norm=2736.000000 embed_norm=3.843750 delta_norm=2.906250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=13/20 loss=18.653711 reward_margin=-18.653759 grad_norm=26752.000000 embed_norm=3.859375 delta_norm=2.906250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=14/20 loss=19.046875 reward_margin=-19.046986 grad_norm=25344.000000 embed_norm=3.859375 delta_norm=2.906250
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=15/20 loss=2.853510 reward_margin=-2.794262 grad_norm=21248.000000 embed_norm=3.859375 delta_norm=2.921875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=16/20 loss=5.607388 reward_margin=-5.603589 grad_norm=19584.000000 embed_norm=3.875000 delta_norm=2.921875
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=17/20 loss=5.513221 reward_margin=-5.509290 grad_norm=16256.000000 embed_norm=3.875000 delta_norm=2.937500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=18/20 loss=3.294811 reward_margin=-3.256873 grad_norm=12096.000000 embed_norm=3.890625 delta_norm=2.937500
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=19/20 loss=8.689622 reward_margin=-8.689514 grad_norm=12608.000000 embed_norm=3.890625 delta_norm=2.953125
+INFO:torchtune.utils._logging:attacker_inner_loop global_step=19 inner_step=20/20 loss=2.516960 reward_margin=-2.432739 grad_norm=10688.000000 embed_norm=3.890625 delta_norm=2.968750
+1|19|Loss: 0.6117799282073975: 100%|██████████| 20/20 [02:06<00:00,  6.28s/it]1|20|Loss: 0.6960811614990234: 100%|██████████| 20/20 [02:06<00:00,  6.28s/it]INFO:torchtune.utils._logging:Adapter checkpoint of size 0.07 GiB saved to /home/gcpuser/sky_workdir/runs/adv_dpo_1b/epoch_0/adapter_model.pt
+INFO:torchtune.utils._logging:Adapter checkpoint of size 0.07 GiB saved to /home/gcpuser/sky_workdir/runs/adv_dpo_1b/epoch_0/adapter_model.safetensors
+INFO:torchtune.utils._logging:Adapter checkpoint of size 0.00 GiB saved to /home/gcpuser/sky_workdir/runs/adv_dpo_1b/epoch_0/adapter_config.json
+INFO:torchtune.utils._logging:Saving final epoch checkpoint.
+INFO:torchtune.utils._logging:Please note that you have set adapter_only=True, so only adapter weights will be saved.You need to merge the adapter weights into your base model for further use. See FullModelHFCheckpointer.save_checkpoint for more details.
+1|20|Loss: 0.6960811614990234: 100%|██████████| 20/20 [02:08<00:00,  6.45s/it]
