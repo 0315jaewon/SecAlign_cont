@@ -157,6 +157,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._reset_attack_tokens_each_batch = cfg.get(
             "reset_attack_tokens_each_batch", False
         )
+        self._attacker_optimizer_cfg = cfg.get("attacker_optimizer", cfg.optimizer)
         self._debug = cfg.get("debug", False)
 
         # activation checkpointing/offloading
@@ -301,7 +302,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             ),
         )
         self._attacker_optimizer = self._setup_attacker_optimizer(
-            cfg_optimizer=cfg.optimizer
+            cfg_optimizer=self._attacker_optimizer_cfg
         )
 
         self._loss_fn = config.instantiate(cfg.loss)
@@ -427,6 +428,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             attack_param[self._attack_token_ids].copy_(
                 self._initial_attack_embedding_rows
             )
+
+    def _reset_attack_state(self) -> None:
+        self._reset_attack_token_rows()
+        self._attacker_optimizer = self._setup_attacker_optimizer(
+            cfg_optimizer=self._attacker_optimizer_cfg
+        )
 
     def _mask_attack_embedding_grad(self) -> None:
         grad = self._attack_embedding_param.grad
@@ -920,61 +927,77 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
         if self._reset_attack_tokens_each_batch:
-            self._reset_attack_token_rows()
+            self._reset_attack_state()
 
         last_metrics: Optional[Dict[str, torch.Tensor]] = None
 
-        for _ in range(self._attack_inner_steps):
-            self._zero_all_grads()
+        was_training = self._model.training
+        self._model.eval()
 
-            attack_loss, attack_metrics = self._compute_dpo_loss(
-                batch, flip_preferences=True
-            )
-            attack_loss.backward()
+        try:
+            for _ in range(self._attack_inner_steps):
+                self._zero_all_grads()
 
-            if self._debug:
+                attack_loss, attack_metrics = self._compute_dpo_loss(
+                    batch, flip_preferences=True
+                )
+                attack_loss.backward()
+
+                if self._debug:
+                    grad = self._attack_embedding_param.grad
+                    local_grad = (
+                        self._to_local_tensor(grad) if grad is not None else None
+                    )
+                    utils.log_rank_zero(
+                        log,
+                        "attacker_debug "
+                        f"global_step={self.global_step} "
+                        f"inner_step={_ + 1}/{self._attack_inner_steps} "
+                        f"requires_grad={self._attack_embedding_param.requires_grad} "
+                        f"param_is_meta={self._attack_embedding_param.is_meta} "
+                        f"grad_is_none={grad is None} "
+                        f"grad_is_meta={getattr(grad, 'is_meta', False) if grad is not None else 'na'} "
+                        f"local_grad_is_none={local_grad is None}",
+                    )
+
+                self._mask_attack_embedding_grad()
                 grad = self._attack_embedding_param.grad
-                local_grad = self._to_local_tensor(grad) if grad is not None else None
+                if grad is not None and not getattr(grad, "is_meta", False):
+                    local_grad = self._to_local_tensor(grad)
+                    attack_grad_norm = local_grad[self._attack_token_ids].norm().detach()
+                else:
+                    attack_grad_norm = torch.tensor(float("nan"), device=self._device)
+                self._clear_defender_grads()
+
+                self._attacker_optimizer.step()
+
+                with torch.no_grad():
+                    attack_param = self._to_local_tensor(self._attack_embedding_param)
+                    attack_rows = attack_param[self._attack_token_ids]
+                    attack_rows_norm = attack_rows.norm().detach()
+                    attack_delta_norm = (
+                        attack_rows - self._initial_attack_embedding_rows
+                    ).norm().detach()
+                    attack_reward_margin = (
+                        attack_metrics["rewards/chosen"]
+                        - attack_metrics["rewards/rejected"]
+                    ).detach()
+
                 utils.log_rank_zero(
                     log,
-                    "attacker_debug "
+                    "attacker_inner_loop "
                     f"global_step={self.global_step} "
                     f"inner_step={_ + 1}/{self._attack_inner_steps} "
-                    f"requires_grad={self._attack_embedding_param.requires_grad} "
-                    f"param_is_meta={self._attack_embedding_param.is_meta} "
-                    f"grad_is_none={grad is None} "
-                    f"grad_is_meta={getattr(grad, 'is_meta', False) if grad is not None else 'na'} "
-                    f"local_grad_is_none={local_grad is None}",
+                    f"loss={attack_loss.detach().item():.6f} "
+                    f"reward_margin={attack_reward_margin.item():.6f} "
+                    f"grad_norm={attack_grad_norm.item():.6f} "
+                    f"embed_norm={attack_rows_norm.item():.6f} "
+                    f"delta_norm={attack_delta_norm.item():.6f}",
                 )
-
-            self._mask_attack_embedding_grad()
-            grad = self._attack_embedding_param.grad
-            if grad is not None and not getattr(grad, "is_meta", False):
-                local_grad = self._to_local_tensor(grad)
-                attack_grad_norm = local_grad[self._attack_token_ids].norm().detach()
-            else:
-                attack_grad_norm = torch.tensor(float("nan"), device=self._device)
-            self._clear_defender_grads()
-
-            self._attacker_optimizer.step()
-
-            with torch.no_grad():
-                attack_param = self._to_local_tensor(self._attack_embedding_param)
-                attack_rows = attack_param[self._attack_token_ids]
-                attack_rows_norm = attack_rows.norm().detach()
-                attack_delta_norm = (attack_rows - self._initial_attack_embedding_rows).norm().detach()
-
-            utils.log_rank_zero(
-                log,
-                "attacker_inner_loop "
-                f"global_step={self.global_step} "
-                f"inner_step={_ + 1}/{self._attack_inner_steps} "
-                f"loss={attack_loss.detach().item():.6f} "
-                f"grad_norm={attack_grad_norm.item():.6f} "
-                f"embed_norm={attack_rows_norm.item():.6f} "
-                f"delta_norm={attack_delta_norm.item():.6f}"
-            )
-            last_metrics = attack_metrics
+                last_metrics = attack_metrics
+        finally:
+            if was_training:
+                self._model.train()
 
         if last_metrics is None:
             raise RuntimeError("Attacker inner loop ran zero steps.")
@@ -985,6 +1008,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _run_defender_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        self._model.train()
         self._zero_all_grads()
 
         defender_loss, defender_metrics = self._compute_dpo_loss(
@@ -1055,6 +1079,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
                 attacker_metrics = None
                 if self._enable_attack_inner_loop:
+                    if self._is_rank_zero and self.global_step > 0:
+                        pbar.write("")
                     attacker_metrics = self._run_attacker_inner_loop(batch)
 
                 defender_loss, defender_metrics = self._run_defender_step(batch)
