@@ -521,9 +521,16 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         init_start = time.perf_counter()
 
+        world_size, _ = utils.get_world_size_and_rank()
+        self._use_fsdp = world_size > 1
+
         utils.log_rank_zero(
             log,
-            "FSDP is enabled. Instantiating model and loading checkpoint on Rank 0 ...",
+            (
+                "FSDP is enabled. Instantiating model and loading checkpoint on Rank 0 ..."
+                if self._use_fsdp
+                else "Single-process mode detected. Instantiating model without FSDP sharding ..."
+            ),
         )
 
         with training.set_default_dtype(self._dtype), torch.device("meta"):
@@ -542,19 +549,19 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 model, auto_wrap_policy={modules.TransformerSelfAttentionLayer}
             )
 
-        # For FSDP sharding
-        fsdp_shard_conditions = [
-            partial(
-                training.get_shard_conditions,
-                names_to_match=custom_sharded_layers,
+        if self._use_fsdp:
+            fsdp_shard_conditions = [
+                partial(
+                    training.get_shard_conditions,
+                    names_to_match=custom_sharded_layers,
+                )
+            ]
+            training.shard_model(
+                model=model,
+                shard_conditions=fsdp_shard_conditions,
+                cpu_offload=fsdp_cpu_offload,
+                reshard_after_forward=reshard_after_forward,
             )
-        ]
-        training.shard_model(
-            model=model,
-            shard_conditions=fsdp_shard_conditions,
-            cpu_offload=fsdp_cpu_offload,
-            reshard_after_forward=reshard_after_forward,
-        )
 
         if lora_weights_state_dict:
             lora_missing, lora_unexpected = training.load_from_full_model_state_dict(
