@@ -159,6 +159,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
         self._attacker_optimizer_cfg = cfg.get("attacker_optimizer", cfg.optimizer)
         self._debug = cfg.get("debug", False)
+        self._attack_probe_max_new_tokens = cfg.get("attack_probe_max_new_tokens", 32)
 
         # activation checkpointing/offloading
         self._enable_activation_checkpointing = cfg.get(
@@ -480,6 +481,70 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if world_size == 1:
             return weight
         return self._to_local_tensor(weight)
+
+    def _should_log_attack_probe(self, inner_step: int) -> bool:
+        return self._debug
+
+    def _extract_probe_prompt_ids(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor:
+        concatenated_input_ids, concatenated_labels = batch
+        chosen_input_ids = concatenated_input_ids[0]
+        chosen_labels = concatenated_labels[0]
+
+        response_start = (chosen_labels != CROSS_ENTROPY_IGNORE_IDX).nonzero(
+            as_tuple=False
+        )
+        if response_start.numel() == 0:
+            prompt_end = chosen_input_ids.size(0)
+        else:
+            prompt_end = int(response_start[0].item())
+
+        return chosen_input_ids[:prompt_end].to(self._device)
+
+    def _generate_attack_probe(
+        self, prompt_input_ids: torch.Tensor, max_new_tokens: int
+    ) -> Tuple[str, str]:
+        eos_token_id = getattr(self._tokenizer.tokenizer, "eos_token_id", None)
+        generated = prompt_input_ids.unsqueeze(0)
+
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                with self.activations_handling_ctx:
+                    logits = self._model(generated)
+                next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+                generated = torch.cat([generated, next_token], dim=1)
+                next_token_id = int(next_token.item())
+                if eos_token_id is not None and next_token_id == eos_token_id:
+                    break
+
+        prompt_text = self._tokenizer.decode(
+            prompt_input_ids.tolist(), skip_special_tokens=False
+        )
+        generated_text = self._tokenizer.decode(
+            generated[0, prompt_input_ids.size(0) :].tolist(),
+            skip_special_tokens=False,
+        )
+        return prompt_text, generated_text
+
+    def _log_attack_probe(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], inner_step: int
+    ) -> None:
+        if not self._should_log_attack_probe(inner_step):
+            return
+
+        prompt_input_ids = self._extract_probe_prompt_ids(batch)
+        prompt_text, generated_text = self._generate_attack_probe(
+            prompt_input_ids, max_new_tokens=self._attack_probe_max_new_tokens
+        )
+        utils.log_rank_zero(
+            log,
+            "attacker_probe "
+            f"global_step={self.global_step} "
+            f"inner_step={inner_step}/{self._attack_inner_steps} "
+            f"prompt={json.dumps(prompt_text)} "
+            f"generated={json.dumps(generated_text)}",
+        )
     
     def _expand_base_state_dict_for_attack_tokens(
         self, base_model_state_dict: Dict[str, Any]
@@ -985,6 +1050,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 f"embed_norm={attack_rows_norm.item():.6f} "
                 f"delta_norm={attack_delta_norm.item():.6f}",
             )
+            self._log_attack_probe(batch, inner_step=0)
 
             for _ in range(self._attack_inner_steps):
                 self._zero_all_grads()
@@ -1047,6 +1113,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                     f"embed_norm={attack_rows_norm.item():.6f} "
                     f"delta_norm={attack_delta_norm.item():.6f}",
                 )
+                self._log_attack_probe(batch, inner_step=_ + 1)
                 last_metrics = attack_metrics
         finally:
             if was_training:
