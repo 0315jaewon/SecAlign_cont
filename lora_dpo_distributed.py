@@ -424,7 +424,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     
     def _reset_attack_token_rows(self) -> None:
         with torch.no_grad():
-            attack_param = self._to_local_tensor(self._attack_embedding_param)
+            attack_param = self._get_attack_tensor_view(self._attack_embedding_param)
             attack_param[self._attack_token_ids].copy_(
                 self._initial_attack_embedding_rows
             )
@@ -440,7 +440,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if grad is None:
             return
 
-        grad = self._to_local_tensor(grad)
+        grad = self._get_attack_tensor_view(grad)
 
         mask = torch.zeros(grad.size(0), dtype=torch.bool, device=grad.device)
         mask[self._attack_token_ids] = True
@@ -461,6 +461,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if hasattr(tensor, "to_local"):
             return tensor.to_local()
         return tensor
+
+    def _get_attack_tensor_view(self, tensor: torch.Tensor) -> torch.Tensor:
+        world_size, _ = utils.get_world_size_and_rank()
+        if world_size == 1:
+            return tensor
+        return self._to_local_tensor(tensor)
     
     def _expand_base_state_dict_for_attack_tokens(
         self, base_model_state_dict: Dict[str, Any]
@@ -617,7 +623,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self.adapter_params = get_adapter_params(model)
         self._defender_params = list(self.adapter_params.values())
         self._attack_embedding_param = model.tok_embeddings.weight
-        local_attack_embedding_param = self._to_local_tensor(
+        local_attack_embedding_param = self._get_attack_tensor_view(
             self._attack_embedding_param
         )
         self._initial_attack_embedding_rows = (
@@ -902,7 +908,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
-            attack_param = self._to_local_tensor(self._attack_embedding_param)
+            attack_param = self._get_attack_tensor_view(self._attack_embedding_param)
             current_rows = attack_param[self._attack_token_ids].clone()
             attack_param[self._attack_token_ids].copy_(
                 self._initial_attack_embedding_rows
@@ -918,7 +924,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 ) = self.concatenated_forward(self._model, batch)
         finally:
             with torch.no_grad():
-                attack_param = self._to_local_tensor(self._attack_embedding_param)
+                attack_param = self._get_attack_tensor_view(
+                    self._attack_embedding_param
+                )
                 attack_param[self._attack_token_ids].copy_(current_rows)
 
         return reference_chosen_log_probs, reference_rejected_log_probs
@@ -973,7 +981,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 if self._debug:
                     grad = self._attack_embedding_param.grad
                     local_grad = (
-                        self._to_local_tensor(grad) if grad is not None else None
+                        self._get_attack_tensor_view(grad) if grad is not None else None
                     )
                     utils.log_rank_zero(
                         log,
@@ -990,7 +998,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 self._mask_attack_embedding_grad()
                 grad = self._attack_embedding_param.grad
                 if grad is not None and not getattr(grad, "is_meta", False):
-                    local_grad = self._to_local_tensor(grad)
+                    local_grad = self._get_attack_tensor_view(grad)
                     attack_grad_norm = local_grad[self._attack_token_ids].norm().detach()
                 else:
                     attack_grad_norm = torch.tensor(float("nan"), device=self._device)
@@ -999,7 +1007,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 self._attacker_optimizer.step()
 
                 with torch.no_grad():
-                    attack_param = self._to_local_tensor(self._attack_embedding_param)
+                    attack_param = self._get_attack_tensor_view(
+                        self._attack_embedding_param
+                    )
                     attack_rows = attack_param[self._attack_token_ids]
                     attack_rows_norm = attack_rows.norm().detach()
                     attack_delta_norm = (
