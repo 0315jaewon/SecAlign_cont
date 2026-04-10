@@ -5,7 +5,7 @@ attack_token_prefix: "<ATTACK_"
 attack_init_token: "!"
 enable_attack_inner_loop: True
 attack_inner_steps: 3
-reset_attack_tokens_each_batch: False
+reset_attack_tokens_each_batch: True
 
 model:
   _component_: torchtune.models.llama3_2.lora_llama3_2_1b

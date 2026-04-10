@@ -958,13 +958,21 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
             self._attacker_optimizer.step()
 
+            with torch.no_grad():
+                attack_param = self._to_local_tensor(self._attack_embedding_param)
+                attack_rows = attack_param[self._attack_token_ids]
+                attack_rows_norm = attack_rows.norm().detach()
+                attack_delta_norm = (attack_rows - self._initial_attack_embedding_rows).norm().detach()
+
             utils.log_rank_zero(
                 log,
                 "attacker_inner_loop "
                 f"global_step={self.global_step} "
                 f"inner_step={_ + 1}/{self._attack_inner_steps} "
                 f"loss={attack_loss.detach().item():.6f} "
-                f"grad_norm={attack_grad_norm.item():.6f}",
+                f"grad_norm={attack_grad_norm.item():.6f} "
+                f"embed_norm={attack_rows_norm.item():.6f} "
+                f"delta_norm={attack_delta_norm.item():.6f}"
             )
             last_metrics = attack_metrics
 
