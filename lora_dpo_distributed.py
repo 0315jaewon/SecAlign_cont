@@ -425,9 +425,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _reset_attack_token_rows(self) -> None:
         with torch.no_grad():
             attack_param = self._get_live_attack_embedding()
-            attack_param[self._attack_token_ids].copy_(
-                self._initial_attack_embedding_rows
-            )
+            attack_param[self._attack_token_ids] = self._initial_attack_embedding_rows
             post_reset_delta_norm = (
                 attack_param[self._attack_token_ids]
                 - self._initial_attack_embedding_rows
@@ -932,9 +930,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         with torch.no_grad():
             attack_param = self._get_live_attack_embedding()
             current_rows = attack_param[self._attack_token_ids].clone()
-            attack_param[self._attack_token_ids].copy_(
-                self._initial_attack_embedding_rows
-            )
+            attack_param[self._attack_token_ids] = self._initial_attack_embedding_rows
 
         try:
             with torch.no_grad(), disable_adapter(self._model):
@@ -947,7 +943,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         finally:
             with torch.no_grad():
                 attack_param = self._get_live_attack_embedding()
-                attack_param[self._attack_token_ids].copy_(current_rows)
+                attack_param[self._attack_token_ids] = current_rows
 
         return reference_chosen_log_probs, reference_rejected_log_probs
     
@@ -1137,7 +1133,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 attacker_metrics = None
                 if self._enable_attack_inner_loop:
                     if self._is_rank_zero and self.global_step > 0:
-                        pbar.write("")
+                        print("", flush=True)
                     attacker_metrics = self._run_attacker_inner_loop(batch)
 
                 defender_loss, defender_metrics = self._run_defender_step(batch)
