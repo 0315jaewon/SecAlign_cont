@@ -157,6 +157,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._reset_attack_tokens_each_batch = cfg.get(
             "reset_attack_tokens_each_batch", False
         )
+        self._attacker_reference_free = cfg.get("attacker_reference_free", False)
         self._attacker_optimizer_cfg = cfg.get("attacker_optimizer", cfg.optimizer)
         self._debug = cfg.get("debug", False)
         self._attack_probe_max_new_tokens = cfg.get("attack_probe_max_new_tokens", 32)
@@ -945,7 +946,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         return (chosen_log_probs, rejected_log_probs, chosen_logits, rejected_logits)
 
     def _compute_dpo_loss(
-        self, batch: Tuple[torch.Tensor, torch.Tensor], flip_preferences: bool = False
+        self,
+        batch: Tuple[torch.Tensor, torch.Tensor],
+        flip_preferences: bool = False,
+        reference_free: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         (
             reference_chosen_log_probs,
@@ -980,6 +984,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 reference_chosen_log_probs,
             )
 
+        if reference_free:
+            reference_chosen_log_probs = torch.zeros_like(policy_chosen_log_probs)
+            reference_rejected_log_probs = torch.zeros_like(policy_rejected_log_probs)
+
         loss, chosen_rewards, rejected_rewards = self._loss_fn(
             policy_chosen_log_probs,
             policy_rejected_log_probs,
@@ -998,6 +1006,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             "log_probs/rejected": policy_rejected_log_probs.detach().mean(),
             "logits/chosen": policy_chosen_logits_mean,
             "logits/rejected": policy_rejected_logits_mean,
+            "reference_free": torch.tensor(
+                float(reference_free), device=policy_chosen_log_probs.device
+            ),
         }
 
         return loss, metrics
@@ -1039,7 +1050,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         try:
             with torch.no_grad():
                 attack_loss_0, attack_metrics_0 = self._compute_dpo_loss(
-                    batch, flip_preferences=True
+                    batch,
+                    flip_preferences=True,
+                    reference_free=self._attacker_reference_free,
                 )
                 attack_param = self._to_local_tensor(self._attack_embedding_param)
                 attack_rows = attack_param[self._attack_token_ids]
@@ -1072,7 +1085,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 self._zero_all_grads()
 
                 attack_loss, attack_metrics = self._compute_dpo_loss(
-                    batch, flip_preferences=True
+                    batch,
+                    flip_preferences=True,
+                    reference_free=self._attacker_reference_free,
                 )
                 attack_loss.backward()
 
