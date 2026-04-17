@@ -482,6 +482,13 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             return weight
         return self._to_local_tensor(weight)
 
+    def _mask_attack_token_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        masked_logits = logits.clone()
+        masked_logits[..., self._attack_token_ids] = torch.finfo(
+            masked_logits.dtype
+        ).min
+        return masked_logits
+
     def _should_log_attack_probe(self, inner_step: int) -> bool:
         return self._debug
 
@@ -512,6 +519,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             for _ in range(max_new_tokens):
                 with self.activations_handling_ctx:
                     logits = self._model(generated)
+                logits = self._mask_attack_token_logits(logits)
                 next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 generated = torch.cat([generated, next_token], dim=1)
                 next_token_id = int(next_token.item())
@@ -924,6 +932,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         with self.activations_handling_ctx:
             all_logits = model(concatenated_input_ids)
+        all_logits = self._mask_attack_token_logits(all_logits)
 
         all_log_probs = rlhf.get_batch_log_probs(all_logits, concatenated_labels)
 
