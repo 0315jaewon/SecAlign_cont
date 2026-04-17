@@ -568,6 +568,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             if attack_id < old_vocab_size:
                 continue
             new_embed[attack_id].copy_(init_row_embed)
+        
+        # TODO
+        # dtype of old_embed
+        # dtype of new_embed
 
         expanded_state_dict[embed_key] = new_embed
         return expanded_state_dict
@@ -1038,6 +1042,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                     attack_metrics_0["rewards/chosen"]
                     - attack_metrics_0["rewards/rejected"]
                 ).detach()
+
+            
+            # print dtype of embed_norm and delta_norm
 
             utils.log_rank_zero(
                 log,
