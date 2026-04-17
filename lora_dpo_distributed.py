@@ -160,6 +160,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._attacker_reference_free = cfg.get("attacker_reference_free", False)
         self._attacker_optimizer_cfg = cfg.get("attacker_optimizer", cfg.optimizer)
         self._debug = cfg.get("debug", False)
+        self._enable_attack_token_diagnostics = cfg.get(
+            "log_attack_token_diagnostics", False
+        )
         self._attack_probe_max_new_tokens = cfg.get("attack_probe_max_new_tokens", 32)
 
         # activation checkpointing/offloading
@@ -492,6 +495,68 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
     def _should_log_attack_probe(self, inner_step: int) -> bool:
         return self._debug
+
+    def _log_attack_token_diagnostics(self, inner_step: int) -> None:
+        if not self._enable_attack_token_diagnostics:
+            return
+
+        with torch.no_grad():
+            attack_param = self._get_live_attack_embedding()
+            attack_rows = attack_param[self._attack_token_ids].float()
+            initial_rows = self._initial_attack_embedding_rows.float()
+            full_embed = attack_param.float()
+
+            distances = torch.cdist(attack_rows, full_embed)
+            distances[:, self._attack_token_ids] = float("inf")
+
+            nearest_dists, nearest_ids = distances.min(dim=1)
+            per_token_embed_norms = attack_rows.norm(dim=1)
+            per_token_delta_norms = (attack_rows - initial_rows).norm(dim=1)
+
+            mean_attack_row = attack_rows.mean(dim=0, keepdim=True)
+            mean_initial_row = initial_rows.mean(dim=0, keepdim=True)
+            mean_distances = torch.cdist(mean_attack_row, full_embed)
+            mean_distances[:, self._attack_token_ids] = float("inf")
+            mean_nearest_dist, mean_nearest_id = mean_distances.min(dim=1)
+            mean_embed_norm = mean_attack_row.norm()
+            mean_delta_norm = (mean_attack_row - mean_initial_row).norm()
+
+        for idx, attack_token_id in enumerate(self._attack_token_ids):
+            nearest_token_id = int(nearest_ids[idx].item())
+            nearest_token = self._tokenizer.id_to_token(nearest_token_id)
+            if nearest_token is None:
+                nearest_token = f"<id:{nearest_token_id}>"
+
+            utils.log_rank_zero(
+                log,
+                "attacker_token_diag "
+                f"global_step={self.global_step} "
+                f"inner_step={inner_step}/{self._attack_inner_steps} "
+                f"attack_token_id={attack_token_id} "
+                f"attack_token={json.dumps(self._attack_tokens[idx])} "
+                f"embed_norm={per_token_embed_norms[idx].item():.6f} "
+                f"delta_norm={per_token_delta_norms[idx].item():.6f} "
+                f"nearest_token_id={nearest_token_id} "
+                f"nearest_token={json.dumps(nearest_token)} "
+                f"nearest_dist={nearest_dists[idx].item():.6f}",
+            )
+
+        overall_nearest_token_id = int(mean_nearest_id[0].item())
+        overall_nearest_token = self._tokenizer.id_to_token(overall_nearest_token_id)
+        if overall_nearest_token is None:
+            overall_nearest_token = f"<id:{overall_nearest_token_id}>"
+
+        utils.log_rank_zero(
+            log,
+            "attacker_token_diag_overall "
+            f"global_step={self.global_step} "
+            f"inner_step={inner_step}/{self._attack_inner_steps} "
+            f"mean_embed_norm={mean_embed_norm.item():.6f} "
+            f"mean_delta_norm={mean_delta_norm.item():.6f} "
+            f"nearest_token_id={overall_nearest_token_id} "
+            f"nearest_token={json.dumps(overall_nearest_token)} "
+            f"nearest_dist={mean_nearest_dist[0].item():.6f}",
+        )
 
     def _extract_probe_prompt_ids(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
@@ -1079,6 +1144,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 f"embed_norm={attack_rows_norm.item():.6f} "
                 f"delta_norm={attack_delta_norm.item():.6f}",
             )
+            self._log_attack_token_diagnostics(inner_step=0)
             self._log_attack_probe(batch, inner_step=0)
 
             for _ in range(self._attack_inner_steps):
@@ -1144,6 +1210,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                     f"embed_norm={attack_rows_norm.item():.6f} "
                     f"delta_norm={attack_delta_norm.item():.6f}",
                 )
+                self._log_attack_token_diagnostics(inner_step=_ + 1)
                 self._log_attack_probe(batch, inner_step=_ + 1)
                 last_metrics = attack_metrics
         finally:

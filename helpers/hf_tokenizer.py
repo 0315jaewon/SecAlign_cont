@@ -34,3 +34,6 @@ class HFLlamaTokenizer:
 
     def token_to_id(self, token: str):
         return self.tokenizer.convert_tokens_to_ids(token)
+
+    def id_to_token(self, token_id: int):
+        return self.tokenizer.convert_ids_to_tokens(token_id)
