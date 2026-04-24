@@ -1205,9 +1205,11 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 attack_loss_0, attack_metrics_0 = self._compute_attacker_loss(batch)
                 attack_param = self._to_local_tensor(self._attack_embedding_param)
                 attack_rows = attack_param[self._attack_token_ids]
-                attack_rows_norm = attack_rows.norm().detach()
+                mean_attack_row = attack_rows.mean(dim=0)
+                mean_initial_attack_row = self._initial_attack_embedding_rows.mean(dim=0)
+                attack_rows_norm = mean_attack_row.norm().detach()
                 attack_delta_norm = (
-                    attack_rows - self._initial_attack_embedding_rows
+                    mean_attack_row - mean_initial_attack_row
                 ).norm().detach()
                 attack_reward_margin = (
                     attack_metrics_0["rewards/chosen"]
@@ -1270,9 +1272,11 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                         self._attack_embedding_param
                     )
                     attack_rows = attack_param[self._attack_token_ids]
-                    attack_rows_norm = attack_rows.norm().detach()
+                    mean_attack_row = attack_rows.mean(dim=0)
+                    mean_initial_attack_row = self._initial_attack_embedding_rows.mean(dim=0)
+                    attack_rows_norm = mean_attack_row.norm().detach()
                     attack_delta_norm = (
-                        attack_rows - self._initial_attack_embedding_rows
+                        mean_attack_row - mean_initial_attack_row
                     ).norm().detach()
                     attack_reward_margin = (
                         attack_metrics["rewards/chosen"]
