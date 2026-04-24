@@ -152,6 +152,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._num_attack_tokens = cfg.get("num_attack_tokens", 10)
         self._attack_token_prefix = cfg.get("attack_token_prefix", "<ATTACK_")
         self._attack_init_token = cfg.get("attack_init_token", "!")
+        self._attack_init_tokens = cfg.get("attack_init_tokens", None)
 
         self._enable_attack_inner_loop = cfg.get("enable_attack_inner_loop", True)
         self._attack_inner_steps = cfg.get("attack_inner_steps", 3)
@@ -381,18 +382,49 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 )
             self._attack_token_ids.append(tok_id)
 
-        init_ids = self._tokenizer.encode(self._attack_init_token)
-        if len(init_ids) == 0:
-            raise RuntimeError(
-                f"Attack init token {self._attack_init_token!r} did not tokenize."
-            )
-        self._attack_init_token_id = init_ids[0]
+        if self._attack_init_tokens is not None:
+            init_tokens = list(self._attack_init_tokens)
+            if len(init_tokens) != self._num_attack_tokens:
+                raise RuntimeError(
+                    "attack_init_tokens must have exactly "
+                    f"{self._num_attack_tokens} entries, got {len(init_tokens)}."
+                )
+
+            self._attack_init_token_ids = []
+            self._attack_init_token_strings = []
+            for init_token in init_tokens:
+                init_ids = self._tokenizer.encode(init_token)
+                if len(init_ids) != 1:
+                    raise RuntimeError(
+                        "Each attack_init_tokens entry must tokenize to exactly one token. "
+                        f"Got {init_token!r} -> {init_ids}."
+                    )
+                self._attack_init_token_strings.append(init_token)
+                self._attack_init_token_ids.append(init_ids[0])
+        else:
+            init_ids = self._tokenizer.encode(self._attack_init_token)
+            if len(init_ids) == 0:
+                raise RuntimeError(
+                    f"Attack init token {self._attack_init_token!r} did not tokenize."
+                )
+            self._attack_init_token_id = init_ids[0]
+            self._attack_init_token_ids = [
+                self._attack_init_token_id for _ in range(self._num_attack_tokens)
+            ]
+            self._attack_init_token_strings = [
+                self._attack_init_token for _ in range(self._num_attack_tokens)
+            ]
 
         utils.log_rank_zero(log, f"Registered attack tokens: {self._attack_tokens}")
         utils.log_rank_zero(log, f"Attack token ids: {self._attack_token_ids}")
         utils.log_rank_zero(
             log,
-            f"Attack init token {self._attack_init_token} has id {self._attack_init_token_id}",
+            "Attack init tokens: "
+            f"{self._attack_init_token_strings}",
+        )
+        utils.log_rank_zero(
+            log,
+            f"Attack init token ids: {self._attack_init_token_ids}",
         )
 
     def _resize_attack_token_embeddings_pre_shard(self, model: nn.Module) -> None:
@@ -655,11 +687,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         new_embed = old_embed.new_empty((new_vocab_size, hidden_dim))
         new_embed[:old_vocab_size].copy_(old_embed)
 
-        init_row_embed = old_embed[self._attack_init_token_id]
-        for attack_id in self._attack_token_ids:
+        for attack_id, init_token_id in zip(
+            self._attack_token_ids, self._attack_init_token_ids
+        ):
             if attack_id < old_vocab_size:
                 continue
-            new_embed[attack_id].copy_(init_row_embed)
+            new_embed[attack_id].copy_(old_embed[init_token_id])
         
         # TODO
         # dtype of old_embed
