@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from warnings import warn
 import json
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig, ListConfig
 
 from torch import nn
@@ -157,7 +158,24 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._reset_attack_tokens_each_batch = cfg.get(
             "reset_attack_tokens_each_batch", False
         )
-        self._attacker_reference_free = cfg.get("attacker_reference_free", False)
+        attacker_objective = cfg.get("attacker_objective", None)
+        if attacker_objective is None:
+            attacker_objective = (
+                "dpo_reference_free"
+                if cfg.get("attacker_reference_free", False)
+                else "dpo"
+            )
+        self._attacker_objective = attacker_objective
+        valid_attacker_objectives = {
+            "dpo",
+            "dpo_reference_free",
+            "sft_rejected",
+        }
+        if self._attacker_objective not in valid_attacker_objectives:
+            raise ValueError(
+                f"Unsupported attacker_objective={self._attacker_objective!r}. "
+                f"Expected one of {sorted(valid_attacker_objectives)}."
+            )
         self._attacker_optimizer_cfg = cfg.get("attacker_optimizer", cfg.optimizer)
         self._debug = cfg.get("debug", False)
         self._enable_attack_token_diagnostics = cfg.get(
@@ -1078,6 +1096,76 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         return loss, metrics
 
+    def _compute_sequence_ce_loss(
+        self, logits: torch.Tensor, labels: torch.Tensor
+    ) -> torch.Tensor:
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+
+        flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+        flat_labels = shift_labels.view(-1)
+
+        return F.cross_entropy(
+            flat_logits,
+            flat_labels,
+            ignore_index=CROSS_ENTROPY_IGNORE_IDX,
+            reduction="mean",
+        )
+
+    def _compute_attacker_sft_loss(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        (
+            policy_chosen_log_probs,
+            policy_rejected_log_probs,
+            policy_chosen_logits,
+            policy_rejected_logits,
+        ) = self.concatenated_forward(self._model, batch)
+
+        concatenated_input_ids, concatenated_labels = batch
+        concatenated_labels = concatenated_labels.to(self._device)
+        len_chosen = concatenated_labels.shape[0] // 2
+        rejected_labels = concatenated_labels[len_chosen:]
+
+        loss = self._compute_sequence_ce_loss(policy_rejected_logits, rejected_labels)
+
+        metrics = {
+            "rewards/chosen": policy_rejected_log_probs.detach().mean(),
+            "rewards/rejected": policy_chosen_log_probs.detach().mean(),
+            "rewards/accuracies": (
+                policy_rejected_log_probs > policy_chosen_log_probs
+            ).float().mean().detach(),
+            "log_probs/chosen": policy_rejected_log_probs.detach().mean(),
+            "log_probs/rejected": policy_chosen_log_probs.detach().mean(),
+            "logits/chosen": policy_rejected_logits.detach().mean(),
+            "logits/rejected": policy_chosen_logits.detach().mean(),
+            "reference_free": torch.tensor(1.0, device=policy_rejected_log_probs.device),
+        }
+
+        return loss, metrics
+
+    def _compute_attacker_loss(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if self._attacker_objective == "dpo":
+            return self._compute_dpo_loss(
+                batch,
+                flip_preferences=True,
+                reference_free=False,
+            )
+        if self._attacker_objective == "dpo_reference_free":
+            return self._compute_dpo_loss(
+                batch,
+                flip_preferences=True,
+                reference_free=True,
+            )
+        if self._attacker_objective == "sft_rejected":
+            return self._compute_attacker_sft_loss(batch)
+
+        raise RuntimeError(
+            f"Unreachable attacker objective: {self._attacker_objective!r}"
+        )
+
     def _run_reference_forward_with_frozen_attack_tokens(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1114,11 +1202,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         try:
             with torch.no_grad():
-                attack_loss_0, attack_metrics_0 = self._compute_dpo_loss(
-                    batch,
-                    flip_preferences=True,
-                    reference_free=self._attacker_reference_free,
-                )
+                attack_loss_0, attack_metrics_0 = self._compute_attacker_loss(batch)
                 attack_param = self._to_local_tensor(self._attack_embedding_param)
                 attack_rows = attack_param[self._attack_token_ids]
                 attack_rows_norm = attack_rows.norm().detach()
@@ -1150,11 +1234,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             for _ in range(self._attack_inner_steps):
                 self._zero_all_grads()
 
-                attack_loss, attack_metrics = self._compute_dpo_loss(
-                    batch,
-                    flip_preferences=True,
-                    reference_free=self._attacker_reference_free,
-                )
+                attack_loss, attack_metrics = self._compute_attacker_loss(batch)
                 attack_loss.backward()
 
                 if self._debug:

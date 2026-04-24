@@ -7,6 +7,7 @@ enable_attack_inner_loop: True
 attack_inner_steps: 3
 reset_attack_tokens_each_batch: True
 attacker_reference_free: False
+attacker_objective: dpo
 log_attack_token_diagnostics: False
 
 model:
