@@ -349,8 +349,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         # for logging and tracking training state. This should be computed after the dataloader
         # has been setup
         self._steps_per_epoch = (
-            len(self._dataloader) // self._gradient_accumulation_steps
-        )
+            len(self._dataloader) + self._gradient_accumulation_steps - 1
+        ) // self._gradient_accumulation_steps
         if (
             self.max_steps_per_epoch is not None
             and self.max_steps_per_epoch < self._steps_per_epoch
@@ -1344,17 +1344,12 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         self._model.train()
-        self._zero_all_grads()
-
         defender_loss, defender_metrics = self._compute_dpo_loss(
             batch, flip_preferences=False
         )
-        defender_loss.backward()
+        (defender_loss / self._gradient_accumulation_steps).backward()
 
         self._clear_attack_grads()
-
-        self._defender_optimizer.step()
-        self._lr_scheduler.step()
 
         return defender_loss.detach(), defender_metrics
 
@@ -1384,6 +1379,18 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             "logits/chosen": 0,
             "logits/rejected": 0,
         }
+        accum_loss = 0
+        accum_metrics = {
+            "rewards/chosen": 0,
+            "rewards/rejected": 0,
+            "rewards/accuracies": 0,
+            "log_probs/chosen": 0,
+            "log_probs/rejected": 0,
+            "logits/chosen": 0,
+            "logits/rejected": 0,
+        }
+        accum_attacker_metrics = None
+        accum_microbatches = 0
         num_tokens = 0
 
         # self.epochs_run should be non-zero when we're resuming from a checkpoint
@@ -1394,6 +1401,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             self._sampler.set_epoch(curr_epoch)
 
             pbar = tqdm(total=self._steps_per_epoch, disable=not (rank == 0))
+            optimizer_steps_in_epoch = 0
             for idx, batch in enumerate(self._dataloader):
                 #print(batch[0].shape) # batch size, seq len
                 #print(self._tokenizer.decode(batch[0][0].tolist(), skip_special_tokens=False))
@@ -1404,8 +1412,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 start_time = time.time()
                 if (
                     self.max_steps_per_epoch is not None
-                    and (idx // self._gradient_accumulation_steps)
-                    == self.max_steps_per_epoch
+                    and optimizer_steps_in_epoch == self.max_steps_per_epoch
                 ):
                     break
 
@@ -1420,33 +1427,72 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
                 defender_loss, defender_metrics = self._run_defender_step(batch)
 
-                running_loss = defender_loss.detach()
-                running_metrics = dict(defender_metrics)
-
+                accum_loss += defender_loss.detach()
+                accum_microbatches += 1
+                for key in accum_metrics:
+                    accum_metrics[key] += defender_metrics[key].detach()
                 if attacker_metrics is not None:
+                    if accum_attacker_metrics is None:
+                        accum_attacker_metrics = {
+                            "rewards/chosen": 0,
+                            "rewards/rejected": 0,
+                            "rewards/accuracies": 0,
+                            "log_probs/chosen": 0,
+                            "log_probs/rejected": 0,
+                            "logits/chosen": 0,
+                            "logits/rejected": 0,
+                        }
+                    for key in accum_attacker_metrics:
+                        accum_attacker_metrics[key] += attacker_metrics[key].detach()
+
+                is_last_batch = idx + 1 == len(self._dataloader)
+                if (
+                    accum_microbatches < self._gradient_accumulation_steps
+                    and not is_last_batch
+                ):
+                    continue
+
+                self._defender_optimizer.step()
+                self._lr_scheduler.step()
+                self._zero_all_grads()
+
+                running_loss = accum_loss / accum_microbatches
+                running_metrics = {
+                    key: value / accum_microbatches
+                    for key, value in accum_metrics.items()
+                }
+
+                if accum_attacker_metrics is not None:
                     running_metrics.update(
                         {
-                            "attacker/rewards/chosen": attacker_metrics[
-                                "rewards/chosen"
-                            ],
-                            "attacker/rewards/rejected": attacker_metrics[
-                                "rewards/rejected"
-                            ],
-                            "attacker/rewards/accuracies": attacker_metrics[
-                                "rewards/accuracies"
-                            ],
-                            "attacker/log_probs/chosen": attacker_metrics[
-                                "log_probs/chosen"
-                            ],
-                            "attacker/log_probs/rejected": attacker_metrics[
-                                "log_probs/rejected"
-                            ],
-                            "attacker/logits/chosen": attacker_metrics[
-                                "logits/chosen"
-                            ],
-                            "attacker/logits/rejected": attacker_metrics[
-                                "logits/rejected"
-                            ],
+                            "attacker/rewards/chosen": (
+                                accum_attacker_metrics["rewards/chosen"]
+                                / accum_microbatches
+                            ),
+                            "attacker/rewards/rejected": (
+                                accum_attacker_metrics["rewards/rejected"]
+                                / accum_microbatches
+                            ),
+                            "attacker/rewards/accuracies": (
+                                accum_attacker_metrics["rewards/accuracies"]
+                                / accum_microbatches
+                            ),
+                            "attacker/log_probs/chosen": (
+                                accum_attacker_metrics["log_probs/chosen"]
+                                / accum_microbatches
+                            ),
+                            "attacker/log_probs/rejected": (
+                                accum_attacker_metrics["log_probs/rejected"]
+                                / accum_microbatches
+                            ),
+                            "attacker/logits/chosen": (
+                                accum_attacker_metrics["logits/chosen"]
+                                / accum_microbatches
+                            ),
+                            "attacker/logits/rejected": (
+                                accum_attacker_metrics["logits/rejected"]
+                                / accum_microbatches
+                            ),
                         }
                     )
 
@@ -1458,6 +1504,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                         running_metrics[key], op=torch.distributed.ReduceOp.AVG
                     )
 
+                optimizer_steps_in_epoch += 1
                 self.global_step += 1
 
                 loss_to_log = running_loss.item()
@@ -1539,6 +1586,18 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
                 running_loss = 0
                 running_metrics = {key: 0 for key in running_metrics}
+                accum_loss = 0
+                accum_metrics = {
+                    "rewards/chosen": 0,
+                    "rewards/rejected": 0,
+                    "rewards/accuracies": 0,
+                    "log_probs/chosen": 0,
+                    "log_probs/rejected": 0,
+                    "logits/chosen": 0,
+                    "logits/rejected": 0,
+                }
+                accum_attacker_metrics = None
+                accum_microbatches = 0
                 num_tokens = 0
 
                 t0 = time.perf_counter()
