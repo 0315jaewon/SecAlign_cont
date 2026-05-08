@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--test_data", default="data/davinci_003_outputs.json")
     parser.add_argument("--num_examples", type=int, default=5)
     parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--nonempty_input_only", action="store_true")
     parser.add_argument("--attack", default="none")
     parser.add_argument("--lora_alpha", type=float, default=8.0)
     parser.add_argument("--tensor_parallel_size", type=int, default=1)
@@ -23,6 +24,8 @@ def main():
     attack_func = getattr(test, args.attack)
 
     data = jload(args.test_data)
+    if args.nonempty_input_only:
+        data = [example for example in data if example.get("input", "") != ""]
     examples = data[args.start : args.start + args.num_examples]
 
     model, tokenizer = load_vllm_model(args.model_name_or_path, args.tensor_parallel_size)
