@@ -693,6 +693,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             mean_delta_norm = (mean_attack_row - mean_initial_row).norm()
 
         for idx, attack_token_id in enumerate(self._attack_token_ids):
+            if not bool(self._current_attack_active_mask[idx].item()):
+                continue
+
             nearest_token_id = int(nearest_ids[idx].item())
             nearest_token = self._tokenizer.id_to_token(nearest_token_id)
             if nearest_token is None:
