@@ -2,6 +2,10 @@ output_dir: null
 cache_dir: null
 num_attack_tokens: 10
 attack_token_prefix: "<ATTACK_"
+# suffix = Continuous Suffix Attack (CSA), current/default behavior.
+# span_replacement = Mirrored Injection-Span Attack (MISA), replaces injected span
+# tokens with the fixed attack-token pool initialized from the original tokens.
+attack_token_mode: suffix
 attack_init_token: "!"
 attack_init_tokens: ["the", "and", "to", "of", "a", "in", "is", "for", "on", "with"]
 enable_attack_inner_loop: True

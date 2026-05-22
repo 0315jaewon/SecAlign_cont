@@ -112,11 +112,18 @@ class PreferenceDataset(Dataset):
         packed: bool = False,
         num_attack_tokens: int = 10,
         attack_token_prefix: str = "<ATTACK_",
+        attack_token_mode: str = "suffix",
         **load_dataset_kwargs: dict[str, Any],
     ) -> None:
         if packed:
             raise ValueError(
                 "Packed is currently not supported for preference datasets."
+            )
+        valid_attack_token_modes = {"suffix", "span_replacement"}
+        if attack_token_mode not in valid_attack_token_modes:
+            raise ValueError(
+                f"Unsupported attack_token_mode={attack_token_mode!r}. "
+                f"Expected one of {sorted(valid_attack_token_modes)}."
             )
 
         self._tokenizer = tokenizer
@@ -124,9 +131,18 @@ class PreferenceDataset(Dataset):
         self._data = load_dataset(source, **load_dataset_kwargs)
         self._num_attack_tokens = num_attack_tokens
         self._attack_token_prefix = attack_token_prefix
-        self._attack_suffix = " " + " ".join(
+        self._attack_token_mode = attack_token_mode
+        self._attack_tokens = [
             f"{attack_token_prefix}{idx}>" for idx in range(num_attack_tokens)
-        )
+        ]
+        self._attack_suffix = " " + " ".join(self._attack_tokens)
+        self._attack_token_ids = [
+            self._tokenizer.token_to_id(tok) for tok in self._attack_tokens
+        ]
+        if any(tok_id is None or tok_id < 0 for tok_id in self._attack_token_ids):
+            raise RuntimeError(
+                "Attack tokens must be registered on the tokenizer before dataset setup."
+            )
 
         if filter_fn is not None:
             self._data = self._data.filter(filter_fn)
@@ -137,6 +153,70 @@ class PreferenceDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, list[int]]:
         sample = self._data[index]
         return self._prepare_sample(sample)
+
+    def _find_rejected_span(
+        self, prompt: str, rejected_input_whole: str
+    ) -> tuple[int, int] | None:
+        if rejected_input_whole in prompt:
+            start = prompt.find(rejected_input_whole)
+            return start, start + len(rejected_input_whole)
+
+        # Some datasets store a whitespace-normalized rejected_input rather than the
+        # exact prompt substring. Try a whitespace-tolerant match first.
+        pattern = re.escape(rejected_input_whole.strip()).replace(r"\ ", r"\s+")
+        match = re.search(pattern, prompt)
+        if match is not None:
+            return match.start(), match.end()
+
+        return None
+
+    def _build_suffix_attacked_prompt(
+        self, prompt: str, rejected_input_whole: str
+    ) -> str:
+        span = self._find_rejected_span(prompt, rejected_input_whole)
+        if span is not None:
+            _, end = span
+            return prompt[:end] + self._attack_suffix + prompt[end:]
+
+        # Final fallback: place the attack suffix immediately before the
+        # assistant header, i.e. after the entire injected prompt content.
+        assistant_header = "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+        assistant_idx = prompt.find(assistant_header)
+        if assistant_idx == -1:
+            raise ValueError(
+                "Could not locate rejected_input span or assistant header in prompt, "
+                "so the attack suffix cannot be inserted."
+            )
+        return prompt[:assistant_idx] + self._attack_suffix + prompt[assistant_idx:]
+
+    def _build_span_replacement_prompt(
+        self, prompt: str, rejected_input_whole: str
+    ) -> tuple[list[int], list[int], list[int]]:
+        span = self._find_rejected_span(prompt, rejected_input_whole)
+        if span is None:
+            raise ValueError(
+                "attack_token_mode='span_replacement' requires locating the "
+                "rejected_input span in the prompt."
+            )
+
+        start, end = span
+        prefix_ids = self._tokenizer.encode(prompt[:start])
+        span_ids = self._tokenizer.encode(prompt[start:end])
+        suffix_ids = self._tokenizer.encode(prompt[end:])
+
+        num_replaced = min(len(span_ids), self._num_attack_tokens)
+        replacement_ids = (
+            self._attack_token_ids[:num_replaced] + span_ids[num_replaced:]
+        )
+        prompt_tokenized = prefix_ids + replacement_ids + suffix_ids
+
+        attack_init_token_ids = [0] * self._num_attack_tokens
+        attack_active_mask = [0] * self._num_attack_tokens
+        for idx in range(num_replaced):
+            attack_init_token_ids[idx] = span_ids[idx]
+            attack_active_mask[idx] = 1
+
+        return prompt_tokenized, attack_init_token_ids, attack_active_mask
 
     def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
         prompt = sample["prompt"]
@@ -152,38 +232,20 @@ class PreferenceDataset(Dataset):
                 f"got {type(rejected_input_whole)!r}"
             )
 
-        attacked_prompt = None
-
-        if rejected_input_whole in prompt:
-            attacked_prompt = prompt.replace(
-                rejected_input_whole,
-                rejected_input_whole + self._attack_suffix,
-                1,
+        attack_init_token_ids = None
+        attack_active_mask = None
+        if self._attack_token_mode == "suffix":
+            attacked_prompt = self._build_suffix_attacked_prompt(
+                prompt, rejected_input_whole
             )
+            prompt_tokenized = self._tokenizer.encode(attacked_prompt)
         else:
-            # Some datasets store a whitespace-normalized rejected_input rather than the
-            # exact prompt substring. Try a whitespace-tolerant match first.
-            pattern = re.escape(rejected_input_whole.strip()).replace(r"\ ", r"\s+")
-            match = re.search(pattern, prompt)
-            if match is not None:
-                attacked_prompt = (
-                    prompt[: match.end()] + self._attack_suffix + prompt[match.end() :]
-                )
-            else:
-                # Final fallback: place the attack suffix immediately before the
-                # assistant header, i.e. after the entire injected prompt content.
-                assistant_header = "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-                assistant_idx = prompt.find(assistant_header)
-                if assistant_idx == -1:
-                    raise ValueError(
-                        "Could not locate rejected_input span or assistant header in prompt, "
-                        "so the attack suffix cannot be inserted."
-                    )
-                attacked_prompt = (
-                    prompt[:assistant_idx] + self._attack_suffix + prompt[assistant_idx:]
-                )
+            (
+                prompt_tokenized,
+                attack_init_token_ids,
+                attack_active_mask,
+            ) = self._build_span_replacement_prompt(prompt, rejected_input_whole)
 
-        prompt_tokenized = self._tokenizer.encode(attacked_prompt)
         prompt_mask = [True] * len(prompt_tokenized)
         chosen_tokenized = self._tokenizer.encode(sample["chosen"])
         chosen_mask = [False] * (len(chosen_tokenized) - 1) + [True]
@@ -214,6 +276,9 @@ class PreferenceDataset(Dataset):
             rejected_input_ids=rejected_input_ids,
             rejected_labels=rejected_labels,
         )
+        if attack_init_token_ids is not None and attack_active_mask is not None:
+            tokenized_dict["attack_init_token_ids"] = attack_init_token_ids
+            tokenized_dict["attack_active_mask"] = attack_active_mask
 
         return tokenized_dict
 
@@ -229,6 +294,7 @@ def preference_dataset(
     split: str = "train",
     num_attack_tokens: int = 10,
     attack_token_prefix: str = "<ATTACK_",
+    attack_token_mode: str = "suffix",
     **load_dataset_kwargs: dict[str, Any],
 ) -> PreferenceDataset:
     """
@@ -377,5 +443,6 @@ def preference_dataset(
         split=split,
         num_attack_tokens=num_attack_tokens,
         attack_token_prefix=attack_token_prefix,
+        attack_token_mode=attack_token_mode,
         **load_dataset_kwargs,
     )

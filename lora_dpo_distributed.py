@@ -17,6 +17,7 @@ from omegaconf import DictConfig, ListConfig
 
 from torch import nn
 from torch.distributed import destroy_process_group, init_process_group
+from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 from torchtune import config, modules, rlhf, training, utils
@@ -38,6 +39,42 @@ from torchtune.recipe_interfaces import FTRecipeInterface
 from tqdm import tqdm
 
 log = utils.get_logger("DEBUG")
+
+
+def padded_collate_dpo_with_attack_metadata(
+    batch: List[Dict[str, List[int]]],
+    padding_idx: int = 0,
+    ignore_idx: int = CROSS_ENTROPY_IGNORE_IDX,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    chosen_input_ids = [torch.tensor(ex["chosen_input_ids"]) for ex in batch]
+    rejected_input_ids = [torch.tensor(ex["rejected_input_ids"]) for ex in batch]
+    chosen_labels = [torch.tensor(ex["chosen_labels"]) for ex in batch]
+    rejected_labels = [torch.tensor(ex["rejected_labels"]) for ex in batch]
+
+    concatenated_input_ids = pad_sequence(
+        chosen_input_ids + rejected_input_ids,
+        batch_first=True,
+        padding_value=padding_idx,
+    )
+    concatenated_labels = pad_sequence(
+        chosen_labels + rejected_labels,
+        batch_first=True,
+        padding_value=ignore_idx,
+    )
+
+    attack_init_token_ids = torch.tensor(
+        [ex["attack_init_token_ids"] for ex in batch], dtype=torch.long
+    )
+    attack_active_mask = torch.tensor(
+        [ex["attack_active_mask"] for ex in batch], dtype=torch.bool
+    )
+
+    return (
+        concatenated_input_ids,
+        concatenated_labels,
+        attack_init_token_ids,
+        attack_active_mask,
+    )
 
 
 class LoRADPORecipeDistributed(FTRecipeInterface):
@@ -151,6 +188,13 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         
         self._num_attack_tokens = cfg.get("num_attack_tokens", 10)
         self._attack_token_prefix = cfg.get("attack_token_prefix", "<ATTACK_")
+        self._attack_token_mode = cfg.get("attack_token_mode", "suffix")
+        valid_attack_token_modes = {"suffix", "span_replacement"}
+        if self._attack_token_mode not in valid_attack_token_modes:
+            raise ValueError(
+                f"Unsupported attack_token_mode={self._attack_token_mode!r}. "
+                f"Expected one of {sorted(valid_attack_token_modes)}."
+            )
         self._attack_init_token = cfg.get("attack_init_token", "!")
         self._attack_init_tokens = cfg.get("attack_init_tokens", None)
 
@@ -159,6 +203,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._reset_attack_tokens_each_batch = cfg.get(
             "reset_attack_tokens_each_batch", False
         )
+        if self._attack_token_mode == "span_replacement":
+            self._reset_attack_tokens_each_batch = True
         attacker_objective = cfg.get("attacker_objective", None)
         if attacker_objective is None:
             attacker_objective = (
@@ -385,9 +431,23 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if self._attack_init_tokens is not None:
             init_tokens = list(self._attack_init_tokens)
             if len(init_tokens) != self._num_attack_tokens:
-                raise RuntimeError(
-                    "attack_init_tokens must have exactly "
-                    f"{self._num_attack_tokens} entries, got {len(init_tokens)}."
+                if self._attack_token_mode != "span_replacement":
+                    raise RuntimeError(
+                        "attack_init_tokens must have exactly "
+                        f"{self._num_attack_tokens} entries, got {len(init_tokens)}."
+                    )
+                if len(init_tokens) > self._num_attack_tokens:
+                    init_tokens = init_tokens[: self._num_attack_tokens]
+                else:
+                    init_tokens.extend(
+                        [self._attack_init_token]
+                        * (self._num_attack_tokens - len(init_tokens))
+                    )
+                utils.log_rank_zero(
+                    log,
+                    "Adjusted attack_init_tokens to match num_attack_tokens for "
+                    "span_replacement mode. Inactive attack rows use "
+                    f"attack_init_token={self._attack_init_token!r}.",
                 )
 
             self._attack_init_token_ids = []
@@ -417,6 +477,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         utils.log_rank_zero(log, f"Registered attack tokens: {self._attack_tokens}")
         utils.log_rank_zero(log, f"Attack token ids: {self._attack_token_ids}")
+        utils.log_rank_zero(log, f"Attack token mode: {self._attack_token_mode}")
         utils.log_rank_zero(
             log,
             "Attack init tokens: "
@@ -477,21 +538,81 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         utils.log_rank_zero(log, "Attacker optimizer is initialized.")
         return optimizer
     
-    def _reset_attack_token_rows(self) -> None:
+    def _reset_attack_token_rows(
+        self, batch: Optional[Tuple[torch.Tensor, ...]] = None
+    ) -> None:
         with torch.no_grad():
             attack_param = self._get_live_attack_embedding()
-            attack_param[self._attack_token_ids] = self._initial_attack_embedding_rows
+            if self._attack_token_mode == "span_replacement":
+                if batch is None or len(batch) < 4:
+                    raise RuntimeError(
+                        "attack_token_mode='span_replacement' requires attack "
+                        "initialization metadata in the batch."
+                    )
+                attack_init_token_ids = batch[2]
+                attack_active_mask = batch[3]
+                if attack_init_token_ids.ndim != 2 or attack_active_mask.ndim != 2:
+                    raise RuntimeError(
+                        "Expected attack metadata with shape "
+                        "[batch_size, num_attack_tokens]."
+                    )
+                if attack_init_token_ids.size(0) != 1:
+                    raise RuntimeError(
+                        "attack_token_mode='span_replacement' uses a shared attack "
+                        "token pool and currently requires batch_size=1."
+                    )
+
+                init_ids = attack_init_token_ids[0].to(
+                    device=attack_param.device, dtype=torch.long
+                )
+                active_mask = attack_active_mask[0].to(
+                    device=attack_param.device, dtype=torch.bool
+                )
+                new_rows = self._default_attack_embedding_rows.to(
+                    device=attack_param.device, dtype=attack_param.dtype
+                ).clone()
+                if active_mask.any():
+                    new_rows[active_mask] = attack_param[
+                        init_ids[active_mask]
+                    ].detach()
+                attack_param[self._attack_token_ids] = new_rows
+                self._initial_attack_embedding_rows = new_rows.detach().clone()
+                self._current_attack_init_token_ids = init_ids.detach().clone()
+                self._current_attack_active_mask = active_mask.detach().clone()
+            else:
+                self._initial_attack_embedding_rows = (
+                    self._default_attack_embedding_rows.to(
+                        device=attack_param.device, dtype=attack_param.dtype
+                    ).clone()
+                )
+                attack_param[self._attack_token_ids] = self._initial_attack_embedding_rows
+                self._current_attack_init_token_ids = torch.tensor(
+                    self._attack_init_token_ids,
+                    device=attack_param.device,
+                    dtype=torch.long,
+                )
+                self._current_attack_active_mask = torch.ones(
+                    self._num_attack_tokens,
+                    device=attack_param.device,
+                    dtype=torch.bool,
+                )
             post_reset_delta_norm = (
                 attack_param[self._attack_token_ids]
                 - self._initial_attack_embedding_rows
             ).norm().detach()
         utils.log_rank_zero(
             log,
-            f"attacker_reset global_step={self.global_step} delta_norm={post_reset_delta_norm.item():.6f}",
+            "attacker_reset "
+            f"global_step={self.global_step} "
+            f"mode={self._attack_token_mode} "
+            f"active_tokens={int(self._current_attack_active_mask.sum().item())} "
+            f"delta_norm={post_reset_delta_norm.item():.6f}",
         )
 
-    def _reset_attack_state(self) -> None:
-        self._reset_attack_token_rows()
+    def _reset_attack_state(
+        self, batch: Optional[Tuple[torch.Tensor, ...]] = None
+    ) -> None:
+        self._reset_attack_token_rows(batch=batch)
         self._attacker_optimizer = self._setup_attacker_optimizer(
             cfg_optimizer=self._attacker_optimizer_cfg
         )
@@ -576,6 +697,11 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             nearest_token = self._tokenizer.id_to_token(nearest_token_id)
             if nearest_token is None:
                 nearest_token = f"<id:{nearest_token_id}>"
+            init_token_id = int(self._current_attack_init_token_ids[idx].item())
+            init_token = self._tokenizer.id_to_token(init_token_id)
+            if init_token is None:
+                init_token = f"<id:{init_token_id}>"
+            is_active = bool(self._current_attack_active_mask[idx].item())
 
             utils.log_rank_zero(
                 log,
@@ -584,6 +710,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 f"inner_step={inner_step}/{self._attack_inner_steps} "
                 f"attack_token_id={attack_token_id} "
                 f"attack_token={json.dumps(self._attack_tokens[idx])} "
+                f"active={is_active} "
+                f"init_token_id={init_token_id} "
+                f"init_token={json.dumps(init_token)} "
                 f"embed_norm={per_token_embed_norms[idx].item():.6f} "
                 f"delta_norm={per_token_delta_norms[idx].item():.6f} "
                 f"nearest_token_id={nearest_token_id} "
@@ -609,9 +738,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
 
     def _extract_probe_prompt_ids(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, batch: Tuple[torch.Tensor, ...]
     ) -> torch.Tensor:
-        concatenated_input_ids, concatenated_labels = batch
+        concatenated_input_ids, concatenated_labels = batch[0], batch[1]
         chosen_input_ids = concatenated_input_ids[0]
         chosen_labels = concatenated_labels[0]
 
@@ -652,7 +781,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         return prompt_text, generated_text
 
     def _log_attack_probe(
-        self, batch: Tuple[torch.Tensor, torch.Tensor], inner_step: int
+        self, batch: Tuple[torch.Tensor, ...], inner_step: int
     ) -> None:
         if not self._should_log_attack_probe(inner_step):
             return
@@ -843,6 +972,17 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._initial_attack_embedding_rows = (
             local_attack_embedding_param.detach()[self._attack_token_ids].clone()
         )
+        self._default_attack_embedding_rows = self._initial_attack_embedding_rows.clone()
+        self._current_attack_init_token_ids = torch.tensor(
+            self._attack_init_token_ids,
+            device=self._initial_attack_embedding_rows.device,
+            dtype=torch.long,
+        )
+        self._current_attack_active_mask = torch.ones(
+            self._num_attack_tokens,
+            device=self._initial_attack_embedding_rows.device,
+            dtype=torch.bool,
+        )
         if self._is_rank_zero:
             memory_stats = training.get_memory_stats(device=self._device)
             training.log_memory_stats(memory_stats)
@@ -902,15 +1042,27 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         iterable datasets and streaming datasets are not supported.
         """
         world_size, rank = utils.get_world_size_and_rank()
+        if self._attack_token_mode == "span_replacement" and batch_size != 1:
+            raise ValueError(
+                "attack_token_mode='span_replacement' currently requires "
+                "batch_size=1 because each batch shares one attack-token pool."
+            )
+
+        dataset_kwargs = dict(
+            tokenizer=self._tokenizer,
+            num_attack_tokens=self._num_attack_tokens,
+            attack_token_prefix=self._attack_token_prefix,
+            attack_token_mode=self._attack_token_mode,
+        )
 
         if isinstance(cfg_dataset, ListConfig):
             datasets = [
-                config.instantiate(single_cfg_dataset, tokenizer=self._tokenizer, num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
+                config.instantiate(single_cfg_dataset, **dataset_kwargs)
                 for single_cfg_dataset in cfg_dataset
             ]
             ds = ConcatDataset(datasets=datasets)
         else:
-            ds = config.instantiate(cfg_dataset, tokenizer=self._tokenizer, num_attack_tokens=self._num_attack_tokens, attack_token_prefix=self._attack_token_prefix)
+            ds = config.instantiate(cfg_dataset, **dataset_kwargs)
 
         sampler = DistributedSampler(
             ds, num_replicas=world_size, rank=rank, shuffle=shuffle, seed=0
@@ -923,6 +1075,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             #with open("/storage/home/sizhechen/adv_Meta_SecAlign/data/all_indices_%d.json" % epoch, "w") as f: json.dump(all_indices, f)
 
         sampler.set_epoch(0)
+        collate_fn = padded_collate_dpo
+        if self._attack_token_mode == "span_replacement":
+            collate_fn = padded_collate_dpo_with_attack_metadata
+
         dataloader = DataLoader(
             dataset=ds,
             batch_size=batch_size,
@@ -930,7 +1086,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             # dropping last avoids shape issues with compile + flex attention
             drop_last=True,
             collate_fn=partial(
-                padded_collate_dpo,
+                collate_fn,
                 padding_idx=self._tokenizer.pad_id,
                 ignore_idx=CROSS_ENTROPY_IGNORE_IDX,
             ),
@@ -1028,7 +1184,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             )
 
     def concatenated_forward(
-        self, model: nn.Module, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, model: nn.Module, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Run forward pass of the model with chosen and rejected samples concatenated.
@@ -1040,7 +1196,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         Returns:
             Tuple of chosen log probs, rejected log probs, chosen logits, rejected logits.
         """
-        concatenated_input_ids, concatenated_labels = batch
+        concatenated_input_ids, concatenated_labels = batch[0], batch[1]
         concatenated_input_ids = concatenated_input_ids.to(self._device)
         concatenated_labels = concatenated_labels.to(self._device)
 
@@ -1063,7 +1219,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
     def _compute_dpo_loss(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor],
+        batch: Tuple[torch.Tensor, ...],
         flip_preferences: bool = False,
         reference_free: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -1146,7 +1302,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
 
     def _compute_attacker_sft_loss(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         (
             policy_chosen_log_probs,
@@ -1155,7 +1311,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             policy_rejected_logits,
         ) = self.concatenated_forward(self._model, batch)
 
-        concatenated_input_ids, concatenated_labels = batch
+        concatenated_input_ids, concatenated_labels = batch[0], batch[1]
         concatenated_labels = concatenated_labels.to(self._device)
         len_chosen = concatenated_labels.shape[0] // 2
         rejected_labels = concatenated_labels[len_chosen:]
@@ -1178,7 +1334,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         return loss, metrics
 
     def _compute_attacker_loss(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if self._attacker_objective == "dpo":
             return self._compute_dpo_loss(
@@ -1200,7 +1356,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
 
     def _run_reference_forward_with_frozen_attack_tokens(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             attack_param = self._get_live_attack_embedding()
@@ -1223,10 +1379,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         return reference_chosen_log_probs, reference_rejected_log_probs
     
     def _run_attacker_inner_loop(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, batch: Tuple[torch.Tensor, ...]
     ) -> Dict[str, torch.Tensor]:
         if self._reset_attack_tokens_each_batch:
-            self._reset_attack_state()
+            self._reset_attack_state(batch)
 
         last_metrics: Optional[Dict[str, torch.Tensor]] = None
 
@@ -1341,7 +1497,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         return last_metrics
     
     def _run_defender_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
+        self, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         self._model.train()
         defender_loss, defender_metrics = self._compute_dpo_loss(
