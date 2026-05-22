@@ -267,6 +267,7 @@ def after_inference_evaluation(args, attack, outputs, prepared=None):#, in_respo
                     perfect_examples=perfect_examples,
                     failed_examples=failed_examples,
                     optimized_injections=[data[i].get('best_attack_injection', data[i]['injection']) for i in witness_indices],
+                    model_name=args.gemini_judge_model,
                 )
                 # Attack succeeds only if witness appears AND judge confirms injection following
                 attack_success = [False] * len(data)

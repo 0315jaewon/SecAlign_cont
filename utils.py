@@ -151,6 +151,7 @@ def test_parser():
     parser.add_argument('--num_samples', type=int, default=-1)
     parser.add_argument('--openai_config_path', type=str, default='data/openai_configs.yaml') # If you put more than one Azure models here, AlpacaEval2 will switch between multiple models even if it should not happen (AlpacaEval2 uses one judge LLM).
     parser.add_argument('--gemini_config_path', type=str, default='data/gemini_configs.yaml')
+    parser.add_argument('--gemini_judge_model', type=str, default='gemini-2.5-flash')
     parser.add_argument("--tensor_parallel_size", type=int, default=1)
     parser.add_argument("--lora_alpha", type=float, default=8.0)
     parser.add_argument("--no_instruction_hierarchy", action='store_false', default=True, dest='instruction_hierarchy')
@@ -829,6 +830,22 @@ def judge_injection_following_multi_stage(
         model_name='gemini-2.5-flash'):
     assert len(injections) == len(responses)
     client = load_gemini_model(gemini_config_path)
+    # Gemini Developer API standard-tier text pricing, USD per 1M tokens.
+    # Unknown models still run; they just print token counts without a cost.
+    gemini_price_per_million = {
+        'gemini-2.5-flash': (0.30, 2.50),
+        'gemini-2.5-flash-lite': (0.10, 0.40),
+        'gemini-3.1-flash-lite': (0.25, 1.50),
+        'gemini-3.1-flash-lite-preview': (0.25, 1.50),
+        'gemini-3.1-pro-preview': (2.00, 12.00),
+        'gemini-3.5-flash': (1.50, 9.00),
+    }
+    usage_totals = {
+        'prompt_tokens': 0,
+        'output_tokens': 0,
+        'total_tokens': 0,
+        'requests': 0,
+    }
 
     judge_results = []
     for i, (injection, response) in enumerate(zip(injections, responses)):
@@ -867,8 +884,39 @@ def judge_injection_following_multi_stage(
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.0),
         )
+        if gemini_response is not None and getattr(gemini_response, 'usage_metadata', None) is not None:
+            usage = gemini_response.usage_metadata
+            prompt_tokens = int(getattr(usage, 'prompt_token_count', 0) or 0)
+            total_tokens = int(getattr(usage, 'total_token_count', 0) or 0)
+            output_tokens = int(getattr(usage, 'candidates_token_count', 0) or 0)
+            if total_tokens and prompt_tokens and output_tokens == 0:
+                output_tokens = max(total_tokens - prompt_tokens, 0)
+            usage_totals['prompt_tokens'] += prompt_tokens
+            usage_totals['output_tokens'] += output_tokens
+            usage_totals['total_tokens'] += total_tokens
+            usage_totals['requests'] += 1
         judge_text = '' if gemini_response is None or gemini_response.text is None else gemini_response.text
         judge_results.append('yes' in judge_text.lower())
+
+    input_price, output_price = gemini_price_per_million.get(model_name, (None, None))
+    estimated_cost = None
+    if input_price is not None and output_price is not None:
+        estimated_cost = (
+            usage_totals['prompt_tokens'] / 1_000_000 * input_price +
+            usage_totals['output_tokens'] / 1_000_000 * output_price
+        )
+    print(
+        'Gemini judge usage: model=%s requests=%d prompt_tokens=%d output_tokens=%d total_tokens=%d estimated_cost=%s'
+        % (
+            model_name,
+            usage_totals['requests'],
+            usage_totals['prompt_tokens'],
+            usage_totals['output_tokens'],
+            usage_totals['total_tokens'],
+            'unknown' if estimated_cost is None else '$%.4f' % estimated_cost,
+        ),
+        flush=True,
+    )
 
     return judge_results
 
