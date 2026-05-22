@@ -152,6 +152,7 @@ def test_parser():
     parser.add_argument('--openai_config_path', type=str, default='data/openai_configs.yaml') # If you put more than one Azure models here, AlpacaEval2 will switch between multiple models even if it should not happen (AlpacaEval2 uses one judge LLM).
     parser.add_argument('--gemini_config_path', type=str, default='data/gemini_configs.yaml')
     parser.add_argument('--gemini_judge_model', type=str, default='gemini-2.5-flash')
+    parser.add_argument('--alpaca_annotators_config', type=str, default=None)
     parser.add_argument("--tensor_parallel_size", type=int, default=1)
     parser.add_argument("--lora_alpha", type=float, default=8.0)
     parser.add_argument("--no_instruction_hierarchy", action='store_false', default=True, dest='instruction_hierarchy')

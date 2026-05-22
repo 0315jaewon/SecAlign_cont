@@ -1,0 +1,12 @@
+gemini_pairwise:
+  prompt_template: "alpaca_eval_gemini/basic_prompt.txt"
+  fn_completions: "google_completions"
+  completions_kwargs:
+    model_name: "gemini-3.1-pro-preview"
+    max_output_tokens: 50
+    temperature: 0
+  completion_parser_kwargs:
+    outputs_to_match:
+      1: '(?:^|\n) ?Output \(a\)'
+      2: '(?:^|\n) ?Output \(b\)'
+  batch_size: 1
