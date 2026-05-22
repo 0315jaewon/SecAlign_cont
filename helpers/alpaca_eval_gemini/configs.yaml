@@ -3,7 +3,7 @@ gemini_pairwise:
   fn_completions: "google_completions"
   completions_kwargs:
     model_name: "gemini-3.1-pro-preview"
-    max_output_tokens: 50
+    max_output_tokens: 256
     temperature: 0
   completion_parser_kwargs:
     outputs_to_match:
