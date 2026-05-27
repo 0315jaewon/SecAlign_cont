@@ -245,26 +245,34 @@ def generate_with_attack_embeddings(
     model,
     tokenizer,
     input_ids: torch.Tensor,
-    attack_token_ids: List[int],
+    attack_token_id_to_offset: Dict[int, int],
     attack_embeds: torch.Tensor,
     max_new_tokens: int,
 ) -> str:
     embedding = model.get_input_embeddings()
-    old_rows = embedding.weight[attack_token_ids[: attack_embeds.shape[0]]].detach().clone()
-    embedding.weight[attack_token_ids[: attack_embeds.shape[0]]] = attack_embeds.to(
-        device=embedding.weight.device,
-        dtype=embedding.weight.dtype,
-    )
-    try:
-        outputs = model.generate(
-            input_ids=input_ids,
-            do_sample=False,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.eos_token_id,
+    model_dtype = next(model.parameters()).dtype
+    generated_ids = []
+    current_ids = input_ids.clone()
+
+    for _ in range(max_new_tokens):
+        inputs_embeds = build_inputs_embeds(
+            current_ids,
+            embedding,
+            attack_token_id_to_offset,
+            attack_embeds,
+            model_dtype,
         )
-    finally:
-        embedding.weight[attack_token_ids[: attack_embeds.shape[0]]] = old_rows
-    generated_ids = outputs[0, input_ids.shape[1] :]
+        outputs = model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=torch.ones_like(current_ids),
+        )
+        next_id = int(torch.argmax(outputs.logits[0, -1]).detach().cpu())
+        if tokenizer.eos_token_id is not None and next_id == tokenizer.eos_token_id:
+            break
+        generated_ids.append(next_id)
+        next_id_tensor = torch.tensor([[next_id]], device=current_ids.device)
+        current_ids = torch.cat([current_ids, next_id_tensor], dim=1)
+
     return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
 
@@ -323,7 +331,7 @@ def probe_one_sample(model, tokenizer, item: dict, idx: int, target_text: str, a
             model,
             tokenizer,
             generation_input_ids,
-            attack_token_ids,
+            attack_token_id_to_offset,
             attack_embeds.detach(),
             args.generation_max_new_tokens,
         )
