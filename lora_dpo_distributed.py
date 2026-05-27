@@ -189,6 +189,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._num_attack_tokens = cfg.get("num_attack_tokens", 10)
         self._attack_token_prefix = cfg.get("attack_token_prefix", "<ATTACK_")
         self._attack_token_mode = cfg.get("attack_token_mode", "suffix")
+        self._attack_tokens_per_sample = cfg.get("attack_tokens_per_sample", None)
+        if (
+            self._attack_tokens_per_sample is not None
+            and self._attack_tokens_per_sample <= 0
+        ):
+            raise ValueError(
+                "attack_tokens_per_sample must be positive when provided."
+            )
         valid_attack_token_modes = {"suffix", "span_replacement"}
         if self._attack_token_mode not in valid_attack_token_modes:
             raise ValueError(
@@ -431,11 +439,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if self._attack_init_tokens is not None:
             init_tokens = list(self._attack_init_tokens)
             if len(init_tokens) != self._num_attack_tokens:
-                if self._attack_token_mode != "span_replacement":
-                    raise RuntimeError(
-                        "attack_init_tokens must have exactly "
-                        f"{self._num_attack_tokens} entries, got {len(init_tokens)}."
-                    )
                 if len(init_tokens) > self._num_attack_tokens:
                     init_tokens = init_tokens[: self._num_attack_tokens]
                 else:
@@ -446,7 +449,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 utils.log_rank_zero(
                     log,
                     "Adjusted attack_init_tokens to match num_attack_tokens for "
-                    "span_replacement mode. Inactive attack rows use "
+                    f"{self._attack_token_mode} mode. Inactive attack rows use "
                     f"attack_init_token={self._attack_init_token!r}.",
                 )
 
@@ -591,11 +594,18 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                     device=attack_param.device,
                     dtype=torch.long,
                 )
-                self._current_attack_active_mask = torch.ones(
-                    self._num_attack_tokens,
-                    device=attack_param.device,
-                    dtype=torch.bool,
-                )
+                if batch is not None and len(batch) >= 4:
+                    attack_active_mask = batch[3].to(
+                        device=attack_param.device,
+                        dtype=torch.bool,
+                    )
+                    self._current_attack_active_mask = attack_active_mask.any(dim=0)
+                else:
+                    self._current_attack_active_mask = torch.ones(
+                        self._num_attack_tokens,
+                        device=attack_param.device,
+                        dtype=torch.bool,
+                    )
             post_reset_delta_norm = (
                 attack_param[self._attack_token_ids]
                 - self._initial_attack_embedding_rows
@@ -1056,6 +1066,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             num_attack_tokens=self._num_attack_tokens,
             attack_token_prefix=self._attack_token_prefix,
             attack_token_mode=self._attack_token_mode,
+            attack_tokens_per_sample=self._attack_tokens_per_sample,
         )
 
         if isinstance(cfg_dataset, ListConfig):
@@ -1078,9 +1089,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             #with open("/storage/home/sizhechen/adv_Meta_SecAlign/data/all_indices_%d.json" % epoch, "w") as f: json.dump(all_indices, f)
 
         sampler.set_epoch(0)
-        collate_fn = padded_collate_dpo
-        if self._attack_token_mode == "span_replacement":
-            collate_fn = padded_collate_dpo_with_attack_metadata
+        collate_fn = padded_collate_dpo_with_attack_metadata
 
         dataloader = DataLoader(
             dataset=ds,

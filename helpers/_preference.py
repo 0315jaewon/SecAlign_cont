@@ -113,6 +113,7 @@ class PreferenceDataset(Dataset):
         num_attack_tokens: int = 10,
         attack_token_prefix: str = "<ATTACK_",
         attack_token_mode: str = "suffix",
+        attack_tokens_per_sample: Optional[int] = None,
         **load_dataset_kwargs: dict[str, Any],
     ) -> None:
         if packed:
@@ -132,10 +133,17 @@ class PreferenceDataset(Dataset):
         self._num_attack_tokens = num_attack_tokens
         self._attack_token_prefix = attack_token_prefix
         self._attack_token_mode = attack_token_mode
+        self._attack_tokens_per_sample = attack_tokens_per_sample
+        if (
+            self._attack_tokens_per_sample is not None
+            and self._attack_tokens_per_sample <= 0
+        ):
+            raise ValueError(
+                "attack_tokens_per_sample must be positive when provided."
+            )
         self._attack_tokens = [
             f"{attack_token_prefix}{idx}>" for idx in range(num_attack_tokens)
         ]
-        self._attack_suffix = " " + " ".join(self._attack_tokens)
         self._attack_token_ids = [
             self._tokenizer.token_to_id(tok) for tok in self._attack_tokens
         ]
@@ -172,11 +180,32 @@ class PreferenceDataset(Dataset):
 
     def _build_suffix_attacked_prompt(
         self, prompt: str, rejected_input_whole: str
-    ) -> str:
+    ) -> tuple[str, list[int], list[int]]:
         span = self._find_rejected_span(prompt, rejected_input_whole)
         if span is not None:
+            start, end = span
+            span_token_len = len(self._tokenizer.encode(prompt[start:end]))
+        else:
+            span_token_len = len(self._tokenizer.encode(rejected_input_whole))
+
+        if self._attack_tokens_per_sample is None:
+            suffix_len = min(span_token_len, self._num_attack_tokens)
+        else:
+            suffix_len = min(self._attack_tokens_per_sample, self._num_attack_tokens)
+
+        attack_suffix = " " + " ".join(self._attack_tokens[:suffix_len])
+        attack_init_token_ids = [0] * self._num_attack_tokens
+        attack_active_mask = [0] * self._num_attack_tokens
+        for idx in range(suffix_len):
+            attack_active_mask[idx] = 1
+
+        if span is not None:
             _, end = span
-            return prompt[:end] + self._attack_suffix + prompt[end:]
+            return (
+                prompt[:end] + attack_suffix + prompt[end:],
+                attack_init_token_ids,
+                attack_active_mask,
+            )
 
         # Final fallback: place the attack suffix immediately before the
         # assistant header, i.e. after the entire injected prompt content.
@@ -187,7 +216,11 @@ class PreferenceDataset(Dataset):
                 "Could not locate rejected_input span or assistant header in prompt, "
                 "so the attack suffix cannot be inserted."
             )
-        return prompt[:assistant_idx] + self._attack_suffix + prompt[assistant_idx:]
+        return (
+            prompt[:assistant_idx] + attack_suffix + prompt[assistant_idx:],
+            attack_init_token_ids,
+            attack_active_mask,
+        )
 
     def _build_span_replacement_prompt(
         self, prompt: str, rejected_input_whole: str
@@ -235,7 +268,11 @@ class PreferenceDataset(Dataset):
         attack_init_token_ids = None
         attack_active_mask = None
         if self._attack_token_mode == "suffix":
-            attacked_prompt = self._build_suffix_attacked_prompt(
+            (
+                attacked_prompt,
+                attack_init_token_ids,
+                attack_active_mask,
+            ) = self._build_suffix_attacked_prompt(
                 prompt, rejected_input_whole
             )
             prompt_tokenized = self._tokenizer.encode(attacked_prompt)
@@ -295,6 +332,7 @@ def preference_dataset(
     num_attack_tokens: int = 10,
     attack_token_prefix: str = "<ATTACK_",
     attack_token_mode: str = "suffix",
+    attack_tokens_per_sample: Optional[int] = None,
     **load_dataset_kwargs: dict[str, Any],
 ) -> PreferenceDataset:
     """
@@ -444,5 +482,6 @@ def preference_dataset(
         num_attack_tokens=num_attack_tokens,
         attack_token_prefix=attack_token_prefix,
         attack_token_mode=attack_token_mode,
+        attack_tokens_per_sample=attack_tokens_per_sample,
         **load_dataset_kwargs,
     )

@@ -6,6 +6,9 @@ attack_token_prefix: "<ATTACK_"
 # span_replacement = Mirrored Injection-Span Attack (MISA), replaces injected span
 # tokens with the fixed attack-token pool initialized from the original tokens.
 attack_token_mode: suffix
+# null = suffix mode appends min(rejected injection token length, num_attack_tokens).
+# Set an integer to force a fixed CSA suffix length.
+attack_tokens_per_sample: null
 attack_init_token: "!"
 attack_init_tokens: ["the", "and", "to", "of", "a", "in", "is", "for", "on", "with"]
 enable_attack_inner_loop: True
