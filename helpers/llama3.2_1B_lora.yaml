@@ -43,6 +43,7 @@ checkpointer:
   model_type: LLAMA3
 resume_from_checkpoint: False
 save_adapter_weights_only: True
+checkpoint_every_n_steps: null
 
 dataset:
   _component_: helpers._preference.preference_dataset

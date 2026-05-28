@@ -272,6 +272,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self.global_step = 0
         self._resume_from_checkpoint = cfg.resume_from_checkpoint
         self._save_adapter_weights_only = cfg.get("save_adapter_weights_only", False)
+        self._checkpoint_every_n_steps = cfg.get("checkpoint_every_n_steps", None)
         self._gradient_accumulation_steps = cfg.gradient_accumulation_steps
 
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
@@ -1111,6 +1112,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def save_checkpoint(
         self,
         epoch: int,
+        intermediate_checkpoint: bool = None,
     ) -> None:
         """
         Checkpoint the state of the recipe. The constructed checkpoint state dict
@@ -1126,7 +1128,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         # final dict passed onto the checkpointer
         checkpoint_dict = {}
 
-        intermediate_checkpoint = epoch + 1 < self.total_epochs
+        if intermediate_checkpoint is None:
+            intermediate_checkpoint = epoch + 1 < self.total_epochs
         # To prevent GPU memory from spiking during checkpoint save,
         # we consolidate the full model and optim state dicts on CPU for rank 0
         cpu_state_dict = training.gather_cpu_state_dict(
@@ -1770,7 +1773,20 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
                 t0 = time.perf_counter()
                 #print()
-                # self.save_checkpoint(epoch=curr_epoch + (idx + 1) / self._steps_per_epoch)
+                if (
+                    self._checkpoint_every_n_steps is not None
+                    and self._checkpoint_every_n_steps > 0
+                    and self.global_step % self._checkpoint_every_n_steps == 0
+                ):
+                    if self._is_rank_zero:
+                        utils.log_rank_zero(
+                            log,
+                            f"Saving step checkpoint at global_step={self.global_step}",
+                        )
+                    self.save_checkpoint(
+                        epoch=f"step_{self.global_step}",
+                        intermediate_checkpoint=False,
+                    )
                 #print(time.time() - start_time)
             self.epochs_run += 1
             self.save_checkpoint(epoch=curr_epoch)
