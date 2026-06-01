@@ -10,6 +10,7 @@ OUT_DIR="${OUT_DIR:-csa1000_eval_outputs}"
 SEP_N="${SEP_N:-1024}"
 GEMINI_FLASH_MODEL="${GEMINI_FLASH_MODEL:-gemini-2.5-flash}"
 LM_EVAL_BATCH_SIZE="${LM_EVAL_BATCH_SIZE:-512}"
+ALPACA_ANNOTATORS_CONFIG="${ALPACA_ANNOTATORS_CONFIG:-helpers/alpaca_eval_gemini/configs.yaml}"
 
 SEP_ATTACKS=(
   straightforward
@@ -47,7 +48,7 @@ check_file() {
 check_file "CSA-1000 adapter config" "$MODEL/adapter_config.json"
 check_file "CSA-1000 adapter weights" "$MODEL/adapter_model.safetensors"
 check_file "Gemini config" "data/gemini_configs.yaml"
-check_file "OpenAI config" "data/openai_configs.yaml"
+check_file "AlpacaEval Gemini annotator config" "$ALPACA_ANNOTATORS_CONFIG"
 check_file "SEP dataset" "data/SEP_dataset_test.json"
 check_file "AlpacaFarm dataset" "data/davinci_003_outputs.json"
 
@@ -70,7 +71,7 @@ python test.py \
   --defense none \
   --test_data data/davinci_003_outputs.json \
   --lora_alpha 8.0 \
-  --openai_config_path data/openai_configs.yaml \
+  --alpaca_annotators_config "$ALPACA_ANNOTATORS_CONFIG" \
   > "$OUT_DIR/alpacafarm.out" 2>&1
 
 echo "Step 3/3: Running CSA-1000 lm-eval utility"
