@@ -6,11 +6,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 BASE_HF="${BASE_HF:-meta-llama/Llama-3.2-1B-Instruct}"
-CSA10_HF="${CSA10_HF:-tawer12/llama-3.2-1b-secalign-adapter}"
+CSA10_HF="${CSA10_HF:-tawer12/llama3.2-1b-csa-10-sft-inner20-ep1}"
 CSADYN_HF="${CSADYN_HF:-tawer12/llama3.2-1b-csa-dynamic-sft-inner20-ep1}"
 
 BASE_MODEL="${BASE_MODEL:-/home/gcpuser/models/Llama-3.2-1B-Instruct}"
-CSA10_MODEL="${CSA10_MODEL:-/home/gcpuser/models/Llama-3.2-1B-Instruct_csa10_sft_ep1}"
+CSA10_MODEL="${CSA10_MODEL:-/home/gcpuser/models/Llama-3.2-1B-Instruct_csa_10_sft_inner20_ep1}"
 CSADYN_MODEL="${CSADYN_MODEL:-/home/gcpuser/models/Llama-3.2-1B-Instruct_csa_dynamic_sft_inner20_ep1}"
 
 OUT_DIR="${OUT_DIR:-sep_csa_probe_matrix_outputs}"
