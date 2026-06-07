@@ -164,7 +164,10 @@ def prepare_probe_prompt(
     init_token_id: int,
 ) -> Tuple[str, List[int], torch.Tensor, int]:
     if args.probe == "csa_suffix":
-        active_count = min(args.num_attack_tokens, args.csa_tokens)
+        if args.csa_tokens <= 0:
+            active_count = min(args.num_attack_tokens, len(encode(tokenizer, item["injection"])))
+        else:
+            active_count = min(args.num_attack_tokens, args.csa_tokens)
         active_tokens = attack_tokens(args.attack_token_prefix, active_count)
         attacked_input = (
             item["input"].rstrip()
@@ -395,7 +398,12 @@ def parse_args():
     parser.add_argument("--num_samples", type=int, default=8)
     parser.add_argument("--start_index", type=int, default=0)
     parser.add_argument("--num_attack_tokens", type=int, default=1000)
-    parser.add_argument("--csa_tokens", type=int, default=10)
+    parser.add_argument(
+        "--csa_tokens",
+        type=int,
+        default=10,
+        help="Number of CSA suffix tokens. Use <=0 for dynamic injection-token length.",
+    )
     parser.add_argument("--attack_steps", type=int, default=100)
     parser.add_argument("--attacker_lr", type=float, default=5e-4)
     parser.add_argument("--attack_token_prefix", default="<ATTACK_")
@@ -404,6 +412,7 @@ def parse_args():
     parser.add_argument("--generation_max_new_tokens", type=int, default=128)
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--dtype", choices=["auto", "bf16", "fp16", "fp32"], default="bf16")
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
 
@@ -423,9 +432,17 @@ def main():
 
     target_cache = read_jsonl_by_index(Path(args.target_cache)) if args.target_cache else {}
     output_path = Path(args.output_jsonl)
+    completed = read_jsonl_by_index(output_path) if args.resume else {}
 
     for local_idx, item in enumerate(tqdm(data, desc=f"probing {args.model_label or args.model} {args.probe}")):
         idx = args.start_index + local_idx
+        if idx in completed:
+            print(
+                f"Skipping completed sample_index={idx} for "
+                f"model={args.model_label or args.model} probe={args.probe}",
+                flush=True,
+            )
+            continue
         target_text = get_target_text(
             target_model,
             target_tokenizer,
