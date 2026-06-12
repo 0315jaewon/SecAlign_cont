@@ -20,6 +20,7 @@ ATTACK_STEPS="${ATTACK_STEPS:-100}"
 NUM_ATTACK_TOKENS="${NUM_ATTACK_TOKENS:-1000}"
 DTYPE="${DTYPE:-bf16}"
 PLACEMENTS="${PLACEMENTS:-prefix inspan}"
+RUN_PROBES="${RUN_PROBES:-1}"
 
 RUN_NATURAL_FILLER="${RUN_NATURAL_FILLER:-1}"
 NATURAL_FILLER_NUM_SAMPLES="${NATURAL_FILLER_NUM_SAMPLES:-1024}"
@@ -75,24 +76,26 @@ run_probe() {
     > "$model_out_dir/$probe_label.out" 2>&1
 }
 
-for placement in $PLACEMENTS; do
-  for model_spec in \
-    "base::$BASE_MODEL" \
-    "csa10::$CSA10_MODEL" \
-    "csa_dynamic_inner20::$CSADYN_MODEL"
-  do
-    model_label="${model_spec%%::*}"
-    model_path="${model_spec##*::}"
-    run_probe "$placement" "$model_label" "$model_path" "csa10" "10"
-    run_probe "$placement" "$model_label" "$model_path" "csa20" "20"
-    run_probe "$placement" "$model_label" "$model_path" "csa_dynamic" "0"
-  done
+if [[ "$RUN_PROBES" == "1" ]]; then
+  for placement in $PLACEMENTS; do
+    for model_spec in \
+      "base::$BASE_MODEL" \
+      "csa10::$CSA10_MODEL" \
+      "csa_dynamic_inner20::$CSADYN_MODEL"
+    do
+      model_label="${model_spec%%::*}"
+      model_path="${model_spec##*::}"
+      run_probe "$placement" "$model_label" "$model_path" "csa10" "10"
+      run_probe "$placement" "$model_label" "$model_path" "csa20" "20"
+      run_probe "$placement" "$model_label" "$model_path" "csa_dynamic" "0"
+    done
 
-  python summarize_sep_probe_matrix.py \
-    --input_dir "$OUT_DIR/probes/$placement" \
-    --output_tsv "$OUT_DIR/probes/${placement}_summary.tsv" \
-    --max_steps "$ATTACK_STEPS"
-done
+    python summarize_sep_probe_matrix.py \
+      --input_dir "$OUT_DIR/probes/$placement" \
+      --output_tsv "$OUT_DIR/probes/${placement}_summary.tsv" \
+      --max_steps "$ATTACK_STEPS"
+  done
+fi
 
 if [[ "$RUN_NATURAL_FILLER" == "1" ]]; then
   python make_sep_natural_filler_dataset.py \
