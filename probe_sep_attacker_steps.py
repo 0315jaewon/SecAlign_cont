@@ -63,6 +63,27 @@ def build_injection_only_prompt(tokenizer, item: dict) -> str:
     )
 
 
+def build_csa_inspan_injection(
+    tokenizer,
+    injection: str,
+    active_tokens: List[str],
+) -> str:
+    injection_ids = encode(tokenizer, injection.strip())
+    if not injection_ids:
+        return " ".join(active_tokens)
+
+    pieces = [
+        tokenizer.decode([token_id], skip_special_tokens=False)
+        for token_id in injection_ids
+    ]
+    output = []
+    for idx, piece in enumerate(pieces):
+        output.append(piece)
+        if idx < len(active_tokens):
+            output.append(" " + active_tokens[idx])
+    return "".join(output).strip()
+
+
 def infer_base_model_path(model_path: str) -> str:
     if os.path.exists(os.path.join(model_path, "adapter_config.json")):
         base_path = model_path.split("_")[0]
@@ -168,14 +189,33 @@ def prepare_probe_prompt(
             active_count = min(args.num_attack_tokens, len(encode(tokenizer, item["injection"])))
         else:
             active_count = min(args.num_attack_tokens, args.csa_tokens)
+        if args.csa_placement == "inspan":
+            active_count = min(active_count, len(encode(tokenizer, item["injection"])))
         active_tokens = attack_tokens(args.attack_token_prefix, active_count)
-        attacked_input = (
-            item["input"].rstrip()
-            + " "
-            + item["injection"].strip()
-            + " "
-            + " ".join(active_tokens)
-        ).strip()
+        if args.csa_placement == "suffix":
+            attacked_input = (
+                item["input"].rstrip()
+                + " "
+                + item["injection"].strip()
+                + " "
+                + " ".join(active_tokens)
+            ).strip()
+        elif args.csa_placement == "prefix":
+            attacked_input = (
+                item["input"].rstrip()
+                + " "
+                + " ".join(active_tokens)
+                + " "
+                + item["injection"].strip()
+            ).strip()
+        elif args.csa_placement == "inspan":
+            attacked_input = (
+                item["input"].rstrip()
+                + " "
+                + build_csa_inspan_injection(tokenizer, item["injection"], active_tokens)
+            ).strip()
+        else:
+            raise ValueError(f"Unsupported CSA placement: {args.csa_placement}")
         init_rows = (
             embedding.weight[init_token_id].detach().float().repeat(active_count, 1)
         )
@@ -351,6 +391,7 @@ def probe_one_sample(model, tokenizer, item: dict, idx: int, target_text: str, a
         print("\n" + "=" * 100, flush=True)
         print(
             f"model={args.model_label or args.model} probe={args.probe} "
+            f"placement={args.csa_placement if args.probe == 'csa_suffix' else 'NA'} "
             f"sample={idx} step={step}/{args.attack_steps} "
             f"active_tokens={active_count} loss={record['loss']:.6f} "
             f"witness={item['witness']!r} witness_present={witness_present}",
@@ -374,6 +415,7 @@ def probe_one_sample(model, tokenizer, item: dict, idx: int, target_text: str, a
         "model": args.model,
         "model_label": args.model_label,
         "probe": args.probe,
+        "csa_placement": args.csa_placement if args.probe == "csa_suffix" else None,
         "instruction": item["instruction"],
         "input": item["input"],
         "injection": item["injection"],
@@ -388,6 +430,12 @@ def probe_one_sample(model, tokenizer, item: dict, idx: int, target_text: str, a
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", choices=["csa_suffix", "misa_span"], required=True)
+    parser.add_argument(
+        "--csa_placement",
+        choices=["suffix", "prefix", "inspan"],
+        default="suffix",
+        help="Where CSA attack tokens are placed relative to the SEP injection.",
+    )
     parser.add_argument("--model", required=True)
     parser.add_argument("--model_label")
     parser.add_argument("--base_model")
