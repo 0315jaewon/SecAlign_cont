@@ -207,7 +207,28 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._attack_init_tokens = cfg.get("attack_init_tokens", None)
 
         self._enable_attack_inner_loop = cfg.get("enable_attack_inner_loop", True)
-        self._attack_inner_steps = cfg.get("attack_inner_steps", 3)
+        self._default_attack_inner_steps = cfg.get("attack_inner_steps", 3)
+        if self._default_attack_inner_steps <= 0:
+            raise ValueError("attack_inner_steps must be positive.")
+        self._attack_inner_steps = self._default_attack_inner_steps
+        self._attack_inner_steps_switch_step = cfg.get(
+            "attack_inner_steps_switch_step", None
+        )
+        self._attack_inner_steps_after_switch = cfg.get(
+            "attack_inner_steps_after_switch", None
+        )
+        if (
+            self._attack_inner_steps_switch_step is None
+        ) != (self._attack_inner_steps_after_switch is None):
+            raise ValueError(
+                "attack_inner_steps_switch_step and "
+                "attack_inner_steps_after_switch must be provided together."
+            )
+        if self._attack_inner_steps_switch_step is not None:
+            if self._attack_inner_steps_switch_step < 0:
+                raise ValueError("attack_inner_steps_switch_step must be non-negative.")
+            if self._attack_inner_steps_after_switch <= 0:
+                raise ValueError("attack_inner_steps_after_switch must be positive.")
         self._reset_attack_tokens_each_batch = cfg.get(
             "reset_attack_tokens_each_batch", False
         )
@@ -482,6 +503,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         utils.log_rank_zero(log, f"Registered attack tokens: {self._attack_tokens}")
         utils.log_rank_zero(log, f"Attack token ids: {self._attack_token_ids}")
         utils.log_rank_zero(log, f"Attack token mode: {self._attack_token_mode}")
+        if self._attack_inner_steps_switch_step is not None:
+            utils.log_rank_zero(
+                log,
+                "Attack inner steps schedule: "
+                f"{self._default_attack_inner_steps} until "
+                f"global_step<{self._attack_inner_steps_switch_step}, then "
+                f"{self._attack_inner_steps_after_switch}",
+            )
         utils.log_rank_zero(
             log,
             "Attack init tokens: "
@@ -1393,9 +1422,20 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         return reference_chosen_log_probs, reference_rejected_log_probs
     
+    def _set_current_attack_inner_steps(self) -> None:
+        if (
+            self._attack_inner_steps_switch_step is not None
+            and self.global_step >= self._attack_inner_steps_switch_step
+        ):
+            self._attack_inner_steps = self._attack_inner_steps_after_switch
+        else:
+            self._attack_inner_steps = self._default_attack_inner_steps
+
     def _run_attacker_inner_loop(
         self, batch: Tuple[torch.Tensor, ...]
     ) -> Dict[str, torch.Tensor]:
+        self._set_current_attack_inner_steps()
+
         if self._reset_attack_tokens_each_batch:
             self._reset_attack_state(batch)
 
