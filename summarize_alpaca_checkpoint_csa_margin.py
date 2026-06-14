@@ -18,10 +18,12 @@ def read_jsonl(path: Path):
 
 def checkpoint_sort_key(path: Path):
     stem = path.stem
+    if stem == "step_0_base":
+        return (0, stem)
     try:
-        return int(stem.split("step_")[-1])
+        return (int(stem.split("step_")[-1]), stem)
     except ValueError:
-        return stem
+        return (10**9, stem)
 
 
 def summarize_file(path: Path, max_steps: int):

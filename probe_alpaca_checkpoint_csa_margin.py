@@ -82,7 +82,9 @@ def load_model_and_tokenizer(model_path: str, base_model: str, args):
         "fp16": torch.float16,
         "fp32": torch.float32,
     }
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+    is_adapter = os.path.exists(os.path.join(model_path, "adapter_config.json"))
+    tokenizer_path = model_path if os.path.exists(os.path.join(model_path, "tokenizer_config.json")) else base_model
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
     tokenizer.add_special_tokens(
         {
             "additional_special_tokens": attack_tokens(
@@ -99,11 +101,12 @@ def load_model_and_tokenizer(model_path: str, base_model: str, args):
     )
     model.resize_token_embeddings(len(tokenizer))
 
-    try:
-        from peft import PeftModel
-    except ImportError as exc:
-        raise RuntimeError("Loading LoRA checkpoint adapters requires peft.") from exc
-    model = PeftModel.from_pretrained(model, model_path)
+    if is_adapter:
+        try:
+            from peft import PeftModel
+        except ImportError as exc:
+            raise RuntimeError("Loading LoRA checkpoint adapters requires peft.") from exc
+        model = PeftModel.from_pretrained(model, model_path)
 
     model.to("cuda")
     model.eval()
