@@ -120,7 +120,11 @@ class PreferenceDataset(Dataset):
             raise ValueError(
                 "Packed is currently not supported for preference datasets."
             )
-        valid_attack_token_modes = {"suffix", "span_replacement"}
+        valid_attack_token_modes = {
+            "suffix",
+            "span_replacement",
+            "random_injection_gaps",
+        }
         if attack_token_mode not in valid_attack_token_modes:
             raise ValueError(
                 f"Unsupported attack_token_mode={attack_token_mode!r}. "
@@ -251,6 +255,56 @@ class PreferenceDataset(Dataset):
 
         return prompt_tokenized, attack_init_token_ids, attack_active_mask
 
+    def _build_random_injection_gap_prompt(
+        self, prompt: str, rejected_input_whole: str
+    ) -> tuple[list[int], list[int], list[int]]:
+        span = self._find_rejected_span(prompt, rejected_input_whole)
+        if span is None:
+            raise ValueError(
+                "attack_token_mode='random_injection_gaps' requires locating the "
+                "rejected_input span in the prompt."
+            )
+
+        start, end = span
+        prefix_ids = self._tokenizer.encode(prompt[:start])
+        span_ids = self._tokenizer.encode(prompt[start:end])
+        suffix_ids = self._tokenizer.encode(prompt[end:])
+        span_token_len = len(span_ids)
+
+        if self._attack_tokens_per_sample is None:
+            num_inserted = min(span_token_len, self._num_attack_tokens)
+        else:
+            num_inserted = min(self._attack_tokens_per_sample, self._num_attack_tokens)
+        num_inserted = min(num_inserted, span_token_len + 1)
+
+        if num_inserted > 0:
+            selected_gaps = set(
+                int(gap)
+                for gap in np.random.choice(
+                    span_token_len + 1, size=num_inserted, replace=False
+                )
+            )
+        else:
+            selected_gaps = set()
+
+        span_with_attacks = []
+        next_attack_idx = 0
+        for gap_idx in range(span_token_len + 1):
+            if gap_idx in selected_gaps:
+                span_with_attacks.append(self._attack_token_ids[next_attack_idx])
+                next_attack_idx += 1
+            if gap_idx < span_token_len:
+                span_with_attacks.append(span_ids[gap_idx])
+
+        prompt_tokenized = prefix_ids + span_with_attacks + suffix_ids
+
+        attack_init_token_ids = [0] * self._num_attack_tokens
+        attack_active_mask = [0] * self._num_attack_tokens
+        for idx in range(num_inserted):
+            attack_active_mask[idx] = 1
+
+        return prompt_tokenized, attack_init_token_ids, attack_active_mask
+
     def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
         prompt = sample["prompt"]
         rejected_input_whole = sample.get("rejected_input_whole")
@@ -276,12 +330,18 @@ class PreferenceDataset(Dataset):
                 prompt, rejected_input_whole
             )
             prompt_tokenized = self._tokenizer.encode(attacked_prompt)
-        else:
+        elif self._attack_token_mode == "span_replacement":
             (
                 prompt_tokenized,
                 attack_init_token_ids,
                 attack_active_mask,
             ) = self._build_span_replacement_prompt(prompt, rejected_input_whole)
+        else:
+            (
+                prompt_tokenized,
+                attack_init_token_ids,
+                attack_active_mask,
+            ) = self._build_random_injection_gap_prompt(prompt, rejected_input_whole)
 
         prompt_mask = [True] * len(prompt_tokenized)
         chosen_tokenized = self._tokenizer.encode(sample["chosen"])

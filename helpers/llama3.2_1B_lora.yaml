@@ -5,8 +5,10 @@ attack_token_prefix: "<ATTACK_"
 # suffix = Continuous Suffix Attack (CSA), current/default behavior.
 # span_replacement = Mirrored Injection-Span Attack (MISA), replaces injected span
 # tokens with the fixed attack-token pool initialized from the original tokens.
+# random_injection_gaps = position-diverse CSA, inserts active attack tokens into
+# randomly sampled gaps around the rejected-input span.
 attack_token_mode: suffix
-# null = suffix mode appends min(rejected injection token length, num_attack_tokens).
+# null = use min(rejected injection token length, num_attack_tokens) active tokens.
 # Set an integer to force a fixed CSA suffix length.
 attack_tokens_per_sample: null
 attack_init_token: "!"

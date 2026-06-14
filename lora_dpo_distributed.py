@@ -197,7 +197,11 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             raise ValueError(
                 "attack_tokens_per_sample must be positive when provided."
             )
-        valid_attack_token_modes = {"suffix", "span_replacement"}
+        valid_attack_token_modes = {
+            "suffix",
+            "span_replacement",
+            "random_injection_gaps",
+        }
         if self._attack_token_mode not in valid_attack_token_modes:
             raise ValueError(
                 f"Unsupported attack_token_mode={self._attack_token_mode!r}. "
