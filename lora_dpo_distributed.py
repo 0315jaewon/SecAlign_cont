@@ -6,8 +6,10 @@
 
 import sys
 import time
+import shutil
 
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from warnings import warn
 import json
@@ -16,7 +18,12 @@ import torch.nn.functional as F
 from omegaconf import DictConfig, ListConfig
 
 from torch import nn
+from torch.distributed.checkpoint.state_dict import (
+    set_model_state_dict,
+    StateDictOptions,
+)
 from torch.distributed import destroy_process_group, init_process_group
+from torch.distributed.fsdp import CPUOffloadPolicy, fully_shard
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
@@ -75,6 +82,100 @@ def padded_collate_dpo_with_attack_metadata(
         attack_init_token_ids,
         attack_active_mask,
     )
+
+
+def load_from_full_model_state_dict_v2(
+    model: nn.Module,
+    full_sd: Dict[str, Any],
+    cpu_offload: bool = False,
+) -> Any:
+    """
+    Use PyTorch's distributed checkpoint state-dict API directly.
+
+    The installed Torchtune build forces its older DTensor scatter path, which
+    can segfault while loading large FSDP checkpoints in this environment.
+    """
+    meta_sharded_sd = model.state_dict()
+    for param_name in list(full_sd.keys()):
+        sharded_meta_param = meta_sharded_sd.get(param_name)
+        if sharded_meta_param is not None and hasattr(sharded_meta_param, "dtype"):
+            full_sd[param_name] = full_sd[param_name].to(sharded_meta_param.dtype)
+
+    options = StateDictOptions(
+        full_state_dict=True,
+        broadcast_from_rank0=True,
+        strict=False,
+        cpu_offload=cpu_offload,
+    )
+    return set_model_state_dict(
+        model=model,
+        model_state_dict=full_sd,
+        options=options,
+    )
+
+
+def load_from_full_model_state_dict_unsharded(
+    model: nn.Module,
+    full_sd: Dict[str, Any],
+    device: torch.device,
+) -> Any:
+    """
+    Load a full checkpoint into an unsharded model.
+
+    This avoids distributed checkpoint scatter/broadcast collectives during
+    setup. It costs more peak memory because each rank materializes the full
+    model before FSDP shards it.
+    """
+    target_sd = model.state_dict()
+    converted_sd = {}
+    for param_name, tensor in full_sd.items():
+        target = target_sd.get(param_name)
+        if target is not None and hasattr(target, "dtype"):
+            tensor = tensor.to(device=device, dtype=target.dtype)
+        else:
+            tensor = tensor.to(device=device)
+        converted_sd[param_name] = tensor
+    return model.load_state_dict(converted_sd, strict=False, assign=True)
+
+
+def shard_model_with_optional_root(
+    model: nn.Module,
+    shard_conditions: List[Any],
+    *,
+    cpu_offload: bool,
+    reshard_after_forward: bool,
+    shard_root: bool = True,
+    ignored_params: Optional[set[nn.Parameter]] = None,
+) -> None:
+    """
+    Local variant of torchtune.training.shard_model that lets the root FSDP
+    wrapper be skipped or ignore selected straggler parameters.
+
+    The attack-token code indexes tok_embeddings.weight by global tokenizer IDs.
+    If root FSDP shards that parameter, those IDs are no longer valid local shard
+    indices. For the 8B fit test, sharding transformer blocks while leaving root
+    stragglers replicated is the simplest compatible layout.
+    """
+    fsdp_kwargs = {"reshard_after_forward": reshard_after_forward, "mesh": None}
+    if cpu_offload:
+        fsdp_kwargs["offload_policy"] = CPUOffloadPolicy()
+
+    num_layers_sharded = 0
+    for name, module in reversed(list(model.named_modules())):
+        if any(shard_condition(name, module) for shard_condition in shard_conditions):
+            fully_shard(module, **fsdp_kwargs)
+            num_layers_sharded += 1
+
+    if num_layers_sharded == 0:
+        raise ValueError(
+            "No layer modules were sharded. Please check if shard conditions are working as expected."
+        )
+
+    if shard_root:
+        root_fsdp_kwargs = dict(fsdp_kwargs)
+        if ignored_params:
+            root_fsdp_kwargs["ignored_params"] = ignored_params
+        fully_shard(model, **root_fsdp_kwargs)
 
 
 class LoRADPORecipeDistributed(FTRecipeInterface):
@@ -186,6 +287,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             )
             self._log_peak_memory_stats = False
         
+        self._enable_attack_tokens = cfg.get("enable_attack_tokens", True)
         self._num_attack_tokens = cfg.get("num_attack_tokens", 10)
         self._attack_token_prefix = cfg.get("attack_token_prefix", "<ATTACK_")
         self._attack_token_mode = cfg.get("attack_token_mode", "suffix")
@@ -211,6 +313,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._attack_init_tokens = cfg.get("attack_init_tokens", None)
 
         self._enable_attack_inner_loop = cfg.get("enable_attack_inner_loop", True)
+        if not self._enable_attack_tokens and self._enable_attack_inner_loop:
+            raise ValueError(
+                "enable_attack_inner_loop=True requires enable_attack_tokens=True."
+            )
         self._default_attack_inner_steps = cfg.get("attack_inner_steps", 3)
         if self._default_attack_inner_steps <= 0:
             raise ValueError("attack_inner_steps must be positive.")
@@ -298,6 +404,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         self._resume_from_checkpoint = cfg.resume_from_checkpoint
         self._save_adapter_weights_only = cfg.get("save_adapter_weights_only", False)
         self._checkpoint_every_n_steps = cfg.get("checkpoint_every_n_steps", None)
+        self._checkpoint_keep_last_n_steps = cfg.get(
+            "checkpoint_keep_last_n_steps", None
+        )
+        if (
+            self._checkpoint_keep_last_n_steps is not None
+            and self._checkpoint_keep_last_n_steps < 1
+        ):
+            raise ValueError("checkpoint_keep_last_n_steps must be >= 1 when set.")
         self._gradient_accumulation_steps = cfg.gradient_accumulation_steps
 
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
@@ -381,7 +495,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         checkpoint_dict = self.load_checkpoint(cfg_checkpointer=cfg.checkpointer)
 
         self._tokenizer = config.instantiate(cfg.tokenizer)
-        self._setup_attack_tokens()
+        if self._enable_attack_tokens:
+            self._setup_attack_tokens()
+        else:
+            self._attack_tokens = []
+            self._attack_token_ids = []
+            self._attack_init_token_ids = []
+            self._attack_init_token_strings = []
+            utils.log_rank_zero(log, "Attack token setup is disabled.")
         self._model = self._setup_model(
             cfg_model=cfg.model,
             enable_activation_checkpointing=cfg.enable_activation_checkpointing,
@@ -389,6 +510,16 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             custom_sharded_layers=cfg.get("custom_sharded_layers", None),
             fsdp_cpu_offload=cfg.get("fsdp_cpu_offload", False),
             reshard_after_forward=cfg.get("fsdp_reshard_after_forward", True),
+            load_base_model_before_fsdp=cfg.get(
+                "load_base_model_before_fsdp", False
+            ),
+            keep_attack_embedding_unsharded=cfg.get(
+                "keep_attack_embedding_unsharded", False
+            ),
+            use_torchtune_checkpoint_loader=cfg.get(
+                "use_torchtune_checkpoint_loader", False
+            ),
+            init_lora_before_fsdp=cfg.get("init_lora_before_fsdp", True),
             base_model_state_dict=checkpoint_dict[training.MODEL_KEY],
             lora_weights_state_dict=(
                 checkpoint_dict[training.ADAPTER_KEY]
@@ -405,8 +536,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 else None
             ),
         )
-        self._attacker_optimizer = self._setup_attacker_optimizer(
-            cfg_optimizer=self._attacker_optimizer_cfg
+        self._attacker_optimizer = (
+            self._setup_attacker_optimizer(cfg_optimizer=self._attacker_optimizer_cfg)
+            if self._enable_attack_tokens
+            else None
         )
 
         self._loss_fn = config.instantiate(cfg.loss)
@@ -526,6 +659,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
 
     def _resize_attack_token_embeddings_pre_shard(self, model: nn.Module) -> None:
+        if not self._enable_attack_tokens:
+            return
+
         old_vocab_size, hidden_dim = model.tok_embeddings.weight.shape
         new_vocab_size = self._tokenizer.vocab_size
 
@@ -536,6 +672,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             return
 
         old_embed = model.tok_embeddings
+        old_output = getattr(model, "output", None)
         new_embed = nn.Embedding(
             new_vocab_size,
             hidden_dim,
@@ -544,7 +681,16 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         )
 
         model.tok_embeddings = new_embed
-        model.output = TiedLinear(model.tok_embeddings)
+        if isinstance(old_output, nn.Linear):
+            model.output = nn.Linear(
+                hidden_dim,
+                new_vocab_size,
+                bias=old_output.bias is not None,
+                device=old_embed.weight.device,
+                dtype=old_embed.weight.dtype,
+            )
+        else:
+            model.output = TiedLinear(model.tok_embeddings)
         self._attack_embedding_param = model.tok_embeddings.weight
 
         utils.log_rank_zero(
@@ -571,6 +717,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _setup_attacker_optimizer(
         self, cfg_optimizer: DictConfig
     ) -> Optimizer:
+        if not self._enable_attack_tokens:
+            raise RuntimeError("Cannot set up attacker optimizer without attack tokens.")
         optimizer = config.instantiate(cfg_optimizer, [self._attack_embedding_param])
         utils.log_rank_zero(log, "Attacker optimizer is initialized.")
         return optimizer
@@ -677,11 +825,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             param.grad = None
     
     def _clear_attack_grads(self) -> None:
+        if not self._enable_attack_tokens:
+            return
         self._attack_embedding_param.grad = None
 
     def _zero_all_grads(self) -> None:
         self._defender_optimizer.zero_grad(set_to_none=True)
-        self._attacker_optimizer.zero_grad(set_to_none=True)
+        if self._attacker_optimizer is not None:
+            self._attacker_optimizer.zero_grad(set_to_none=True)
 
     def _to_local_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
         if hasattr(tensor, "to_local"):
@@ -702,6 +853,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         return self._to_local_tensor(weight)
 
     def _mask_attack_token_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        if not self._enable_attack_tokens:
+            return logits
         masked_logits = logits.clone()
         masked_logits[..., self._attack_token_ids] = torch.finfo(
             masked_logits.dtype
@@ -849,6 +1002,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _expand_base_state_dict_for_attack_tokens(
         self, base_model_state_dict: Dict[str, Any]
     ) -> Dict[str, Any]:
+        if not self._enable_attack_tokens:
+            return base_model_state_dict
+
         embed_key = "tok_embeddings.weight"
         old_embed = base_model_state_dict[embed_key]
         old_vocab_size = old_embed.shape[0]
@@ -875,6 +1031,21 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         # dtype of new_embed
 
         expanded_state_dict[embed_key] = new_embed
+
+        output_key = "output.weight"
+        if output_key in base_model_state_dict:
+            old_output = base_model_state_dict[output_key]
+            if old_output.shape[0] == old_vocab_size:
+                new_output = old_output.new_empty((new_vocab_size, old_output.shape[1]))
+                new_output[:old_vocab_size].copy_(old_output)
+                for attack_id, init_token_id in zip(
+                    self._attack_token_ids, self._attack_init_token_ids
+                ):
+                    if attack_id < old_vocab_size:
+                        continue
+                    new_output[attack_id].copy_(old_output[init_token_id])
+                expanded_state_dict[output_key] = new_output
+
         return expanded_state_dict
 
     def _setup_model(
@@ -884,6 +1055,10 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         enable_activation_offloading: bool,
         fsdp_cpu_offload: bool,
         reshard_after_forward: bool,
+        load_base_model_before_fsdp: bool,
+        keep_attack_embedding_unsharded: bool,
+        use_torchtune_checkpoint_loader: bool,
+        init_lora_before_fsdp: bool,
         base_model_state_dict: Dict[str, Any],
         custom_sharded_layers: Optional[List[str]] = None,
         lora_weights_state_dict: Optional[Dict[str, Any]] = None,
@@ -919,34 +1094,100 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         with training.set_default_dtype(self._dtype), torch.device("meta"):
             model = config.instantiate(cfg_model)
         
-        self._resize_attack_token_embeddings_pre_shard(model)
+        if self._enable_attack_tokens:
+            self._resize_attack_token_embeddings_pre_shard(model)
 
+        utils.log_rank_zero(log, "Collecting LoRA adapter parameters ...")
         self.adapter_params = get_adapter_params(model)
+        utils.log_rank_zero(log, "Setting trainable parameters ...")
         set_trainable_params(model, self.adapter_params)
 
-        model.tok_embeddings.weight.requires_grad = True
-        self._attack_embedding_param = model.tok_embeddings.weight
+        if self._enable_attack_tokens:
+            model.tok_embeddings.weight.requires_grad = True
+            self._attack_embedding_param = model.tok_embeddings.weight
+        else:
+            self._attack_embedding_param = None
 
         if enable_activation_checkpointing:
+            utils.log_rank_zero(log, "Setting activation checkpointing ...")
             training.set_activation_checkpointing(
                 model, auto_wrap_policy={modules.TransformerSelfAttentionLayer}
             )
 
+        if init_lora_before_fsdp:
+            # Initializing LoRA DTensors after sharding can crash in some local
+            # attack-token layouts, so keep the current behavior by default.
+            utils.log_rank_zero(log, "Initializing LoRA parameters and RoPE buffers ...")
+            with training.set_default_dtype(self._dtype), self._device:
+                lora_device = "cpu" if fsdp_cpu_offload else self._device
+                for m in model.modules():
+                    if (
+                        isinstance(m, LoRALinear) or isinstance(m, DoRALinear)
+                    ) and not lora_weights_state_dict:
+                        # lora may not be covered in state dict
+                        # if finetune for the 1st time
+                        m.to_empty(device=lora_device)
+                        m.initialize_parameters()
+                    # RoPE is not covered in state dict
+                    if hasattr(m, "rope_init"):
+                        m.rope_init()
+
+        if self._enable_attack_tokens:
+            base_model_state_dict = self._expand_base_state_dict_for_attack_tokens(
+                base_model_state_dict
+            )
+
+        if load_base_model_before_fsdp:
+            utils.log_rank_zero(
+                log,
+                "Loading full base model state dict before FSDP sharding ...",
+            )
+            base_missing, base_unexpected = load_from_full_model_state_dict_unsharded(
+                model,
+                base_model_state_dict,
+                self._device,
+            )
+            utils.log_rank_zero(
+                log,
+                "Finished loading full base model state dict before FSDP sharding.",
+            )
+            if self._enable_attack_tokens:
+                model.tok_embeddings.weight.requires_grad = True
+                self._attack_embedding_param = model.tok_embeddings.weight
+        else:
+            base_missing, base_unexpected = None, None
+
         if self._use_fsdp:
+            utils.log_rank_zero(log, "Sharding model with FSDP ...")
             fsdp_shard_conditions = [
                 partial(
                     training.get_shard_conditions,
                     names_to_match=custom_sharded_layers,
                 )
             ]
-            training.shard_model(
-                model=model,
-                shard_conditions=fsdp_shard_conditions,
-                cpu_offload=fsdp_cpu_offload,
-                reshard_after_forward=reshard_after_forward,
-            )
+            if keep_attack_embedding_unsharded and self._enable_attack_tokens:
+                utils.log_rank_zero(
+                    log,
+                    "Keeping root parameters unsharded for attack-token updates.",
+                )
+                shard_model_with_optional_root(
+                    model=model,
+                    shard_conditions=fsdp_shard_conditions,
+                    cpu_offload=fsdp_cpu_offload,
+                    reshard_after_forward=reshard_after_forward,
+                    shard_root=False,
+                )
+            else:
+                training.shard_model(
+                    model=model,
+                    shard_conditions=fsdp_shard_conditions,
+                    cpu_offload=fsdp_cpu_offload,
+                    reshard_after_forward=reshard_after_forward,
+                )
+            utils.log_rank_zero(log, "Finished FSDP sharding.")
 
         if lora_weights_state_dict:
+            utils.log_rank_zero(log, "Loading LoRA adapter state dict ...")
             lora_missing, lora_unexpected = training.load_from_full_model_state_dict(
                 model,
                 lora_weights_state_dict,
@@ -956,29 +1197,38 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         else:
             lora_missing, lora_unexpected = None, None
 
-        # Initialize LoRA params and RoPE buffers
-        with training.set_default_dtype(self._dtype), self._device:
-            lora_device = "cpu" if fsdp_cpu_offload else self._device
-            for m in model.modules():
-                if (
-                    isinstance(m, LoRALinear) or isinstance(m, DoRALinear)
-                ) and not lora_weights_state_dict:
-                    # lora may not be covered in state dict
-                    # if finetune for the 1st time
-                    m.to_empty(device=lora_device)
-                    m.initialize_parameters()
-                # RoPE is not covered in state dict
-                if hasattr(m, "rope_init"):
-                    m.rope_init()
+        if not init_lora_before_fsdp:
+            utils.log_rank_zero(log, "Initializing LoRA parameters and RoPE buffers ...")
+            with training.set_default_dtype(self._dtype), self._device:
+                lora_device = "cpu" if fsdp_cpu_offload else self._device
+                for m in model.modules():
+                    if (
+                        isinstance(m, LoRALinear) or isinstance(m, DoRALinear)
+                    ) and not lora_weights_state_dict:
+                        # lora may not be covered in state dict
+                        # if finetune for the 1st time
+                        m.to_empty(device=lora_device)
+                        m.initialize_parameters()
+                    # RoPE is not covered in state dict
+                    if hasattr(m, "rope_init"):
+                        m.rope_init()
 
-        base_model_state_dict = self._expand_base_state_dict_for_attack_tokens(base_model_state_dict)
-
-        base_missing, base_unexpected = training.load_from_full_model_state_dict(
-            model,
-            base_model_state_dict,
-            self._device,
-            cpu_offload=fsdp_cpu_offload,
-        )
+        if not load_base_model_before_fsdp:
+            utils.log_rank_zero(log, "Loading base model state dict ...")
+            if use_torchtune_checkpoint_loader:
+                base_missing, base_unexpected = training.load_from_full_model_state_dict(
+                    model,
+                    base_model_state_dict,
+                    self._device,
+                    cpu_offload=fsdp_cpu_offload,
+                )
+            else:
+                base_missing, base_unexpected = load_from_full_model_state_dict_v2(
+                    model,
+                    base_model_state_dict,
+                    cpu_offload=fsdp_cpu_offload,
+                )
+            utils.log_rank_zero(log, "Finished loading base model state dict.")
         is_dora = False
         for m in model.modules():
             if hasattr(m, "initialize_dora_magnitude"):
@@ -1012,24 +1262,27 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
 
         self.adapter_params = get_adapter_params(model)
         self._defender_params = list(self.adapter_params.values())
-        self._attack_embedding_param = model.tok_embeddings.weight
-        local_attack_embedding_param = self._get_attack_tensor_view(
-            self._attack_embedding_param
-        )
-        self._initial_attack_embedding_rows = (
-            local_attack_embedding_param.detach()[self._attack_token_ids].clone()
-        )
-        self._default_attack_embedding_rows = self._initial_attack_embedding_rows.clone()
-        self._current_attack_init_token_ids = torch.tensor(
-            self._attack_init_token_ids,
-            device=self._initial_attack_embedding_rows.device,
-            dtype=torch.long,
-        )
-        self._current_attack_active_mask = torch.ones(
-            self._num_attack_tokens,
-            device=self._initial_attack_embedding_rows.device,
-            dtype=torch.bool,
-        )
+        if self._enable_attack_tokens:
+            self._attack_embedding_param = model.tok_embeddings.weight
+            local_attack_embedding_param = self._get_attack_tensor_view(
+                self._attack_embedding_param
+            )
+            self._initial_attack_embedding_rows = (
+                local_attack_embedding_param.detach()[self._attack_token_ids].clone()
+            )
+            self._default_attack_embedding_rows = (
+                self._initial_attack_embedding_rows.clone()
+            )
+            self._current_attack_init_token_ids = torch.tensor(
+                self._attack_init_token_ids,
+                device=self._initial_attack_embedding_rows.device,
+                dtype=torch.long,
+            )
+            self._current_attack_active_mask = torch.ones(
+                self._num_attack_tokens,
+                device=self._initial_attack_embedding_rows.device,
+                dtype=torch.bool,
+            )
         if self._is_rank_zero:
             memory_stats = training.get_memory_stats(device=self._device)
             training.log_memory_stats(memory_stats)
@@ -1057,6 +1310,8 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _setup_attacker_optimizer(
         self, cfg_optimizer: DictConfig
     ) -> Optimizer:
+        if not self._enable_attack_tokens:
+            raise RuntimeError("Cannot set up attacker optimizer without attack tokens.")
         optimizer = config.instantiate(cfg_optimizer, [self._attack_embedding_param])
         utils.log_rank_zero(log, "Attacker optimizer is initialized.")
         return optimizer
@@ -1089,19 +1344,28 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         iterable datasets and streaming datasets are not supported.
         """
         world_size, rank = utils.get_world_size_and_rank()
-        if self._attack_token_mode == "span_replacement" and batch_size != 1:
+        if (
+            self._enable_attack_tokens
+            and self._attack_token_mode == "span_replacement"
+            and batch_size != 1
+        ):
             raise ValueError(
                 "attack_token_mode='span_replacement' currently requires "
                 "batch_size=1 because each batch shares one attack-token pool."
             )
 
-        dataset_kwargs = dict(
-            tokenizer=self._tokenizer,
-            num_attack_tokens=self._num_attack_tokens,
-            attack_token_prefix=self._attack_token_prefix,
-            attack_token_mode=self._attack_token_mode,
-            attack_tokens_per_sample=self._attack_tokens_per_sample,
-        )
+        if self._enable_attack_tokens:
+            dataset_kwargs = dict(
+                tokenizer=self._tokenizer,
+                num_attack_tokens=self._num_attack_tokens,
+                attack_token_prefix=self._attack_token_prefix,
+                attack_token_mode=self._attack_token_mode,
+                attack_tokens_per_sample=self._attack_tokens_per_sample,
+            )
+            collate_fn = padded_collate_dpo_with_attack_metadata
+        else:
+            dataset_kwargs = dict(tokenizer=self._tokenizer)
+            collate_fn = padded_collate_dpo
 
         if isinstance(cfg_dataset, ListConfig):
             datasets = [
@@ -1123,8 +1387,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             #with open("/storage/home/sizhechen/adv_Meta_SecAlign/data/all_indices_%d.json" % epoch, "w") as f: json.dump(all_indices, f)
 
         sampler.set_epoch(0)
-        collate_fn = padded_collate_dpo_with_attack_metadata
-
         dataloader = DataLoader(
             dataset=ds,
             batch_size=batch_size,
@@ -1231,6 +1493,30 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 adapter_only=self._save_adapter_weights_only,
             )
 
+    def _prune_old_step_checkpoints(self, current_step: int) -> None:
+        if (
+            not self._is_rank_zero
+            or self._checkpoint_every_n_steps is None
+            or self._checkpoint_keep_last_n_steps is None
+        ):
+            return
+
+        step_to_delete = current_step - (
+            self._checkpoint_every_n_steps * self._checkpoint_keep_last_n_steps
+        )
+        if step_to_delete <= 0:
+            return
+
+        output_dir = Path(self._checkpointer._output_dir)
+        checkpoint_dir = output_dir / f"epoch_step_{step_to_delete}"
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
+            utils.log_rank_zero(
+                log,
+                f"Deleted old step checkpoint at global_step={step_to_delete}: "
+                f"{checkpoint_dir}",
+            )
+
     def concatenated_forward(
         self, model: nn.Module, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1272,11 +1558,6 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         reference_free: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         (
-            reference_chosen_log_probs,
-            reference_rejected_log_probs,
-        ) = self._run_reference_forward_with_frozen_attack_tokens(batch)
-
-        (
             policy_chosen_log_probs,
             policy_rejected_log_probs,
             policy_chosen_logits,
@@ -1296,17 +1577,23 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                 policy_rejected_log_probs,
                 policy_chosen_log_probs,
             )
-            (
-                reference_chosen_log_probs,
-                reference_rejected_log_probs,
-            ) = (
-                reference_rejected_log_probs,
-                reference_chosen_log_probs,
-            )
 
         if reference_free:
             reference_chosen_log_probs = torch.zeros_like(policy_chosen_log_probs)
             reference_rejected_log_probs = torch.zeros_like(policy_rejected_log_probs)
+        else:
+            (
+                reference_chosen_log_probs,
+                reference_rejected_log_probs,
+            ) = self._run_reference_forward_with_frozen_attack_tokens(batch)
+            if flip_preferences:
+                (
+                    reference_chosen_log_probs,
+                    reference_rejected_log_probs,
+                ) = (
+                    reference_rejected_log_probs,
+                    reference_chosen_log_probs,
+                )
 
         loss, chosen_rewards, rejected_rewards = self._loss_fn(
             policy_chosen_log_probs,
@@ -1406,6 +1693,16 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
     def _run_reference_forward_with_frozen_attack_tokens(
         self, batch: Tuple[torch.Tensor, ...]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self._enable_attack_tokens:
+            with torch.no_grad(), disable_adapter(self._model):
+                (
+                    reference_chosen_log_probs,
+                    reference_rejected_log_probs,
+                    _,
+                    _,
+                ) = self.concatenated_forward(self._model, batch)
+            return reference_chosen_log_probs, reference_rejected_log_probs
+
         with torch.no_grad():
             attack_param = self._get_live_attack_embedding()
             current_rows = attack_param[self._attack_token_ids].clone()
@@ -1711,13 +2008,14 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                         }
                     )
 
-                torch.distributed.all_reduce(running_loss)
-                torch.distributed.all_reduce(num_tokens)
+                if world_size > 1:
+                    torch.distributed.all_reduce(running_loss)
+                    torch.distributed.all_reduce(num_tokens)
 
-                for key in running_metrics:
-                    torch.distributed.all_reduce(
-                        running_metrics[key], op=torch.distributed.ReduceOp.AVG
-                    )
+                    for key in running_metrics:
+                        torch.distributed.all_reduce(
+                            running_metrics[key], op=torch.distributed.ReduceOp.AVG
+                        )
 
                 optimizer_steps_in_epoch += 1
                 self.global_step += 1
@@ -1831,6 +2129,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                         epoch=f"step_{self.global_step}",
                         intermediate_checkpoint=False,
                     )
+                    self._prune_old_step_checkpoints(self.global_step)
                 #print(time.time() - start_time)
             self.epochs_run += 1
             self.save_checkpoint(epoch=curr_epoch)
