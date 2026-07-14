@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reorder SecAlign eval summaries and collect result CSVs in one directory."""
+"""Reorder SecAlign eval summaries and collect reproducibility artifacts."""
 
 from __future__ import annotations
 
@@ -37,6 +37,35 @@ TEST_DATA_ORDER = [
 DEFAULT_MODELS = {
     "inner20_step60": "~/models/Meta-Llama-3.1-8B-Instruct_positiondiverse_step60_snapshot",
     "inner10_epoch0": "~/models/Meta-Llama-3.1-8B-Instruct_positiondiverse_inner10_epoch0_snapshot",
+}
+
+RUN_METADATA = {
+    "inner20_step60": {
+        "description": "Llama-3.1-8B position-diverse commonword SFT-attacker LoRA, 20 attacker inner steps, step-60 snapshot.",
+        "training_script": "scripts/train_llama31_8b_position_diverse10_commonword_sft_inner20_bs1_ga64_4gpu_ep1.sh",
+        "training_config": "configs/training/llama3.1_8b_position_diverse10_commonword_sft_inner20_bs1_ga64_4gpu_ep1.yaml",
+        "example_launch": (
+            "NPROC_PER_NODE=8 GRAD_ACCUM=32 "
+            "CACHE_DIR=/home/$USER/models/Meta-Llama-3.1-8B-Instruct "
+            "OUTPUT_DIR=/tmp/secalign_runs/llama31_8b_position_diverse10_commonword_sft_inner20_bs1_ga32_8gpu_epoch1 "
+            "LOG_DIR=$PWD/position_diverse10_commonword_8b_train_outputs "
+            "nohup scripts/train_llama31_8b_position_diverse10_commonword_sft_inner20_bs1_ga64_4gpu_ep1.sh "
+            "> position_diverse10_commonword_8b_train_outputs/nohup.out 2>&1 &"
+        ),
+    },
+    "inner10_epoch0": {
+        "description": "Llama-3.1-8B position-diverse commonword SFT-attacker LoRA, 10 attacker inner steps, final epoch-0 checkpoint.",
+        "training_script": "scripts/train_llama31_8b_position_diverse10_commonword_sft_inner10_bs1_ga64_4gpu_ep1.sh",
+        "training_config": "configs/training/llama3.1_8b_position_diverse10_commonword_sft_inner10_bs1_ga64_4gpu_ep1.yaml",
+        "example_launch": (
+            "NPROC_PER_NODE=8 GRAD_ACCUM=32 "
+            "CACHE_DIR=/home/$USER/models/Meta-Llama-3.1-8B-Instruct "
+            "OUTPUT_DIR=/tmp/secalign_runs/llama31_8b_position_diverse10_commonword_sft_inner10_bs1_ga32_8gpu_epoch1 "
+            "LOG_DIR=$PWD/position_diverse10_commonword_8b_inner10_train_outputs "
+            "nohup scripts/train_llama31_8b_position_diverse10_commonword_sft_inner10_bs1_ga64_4gpu_ep1.sh "
+            "> position_diverse10_commonword_8b_inner10_train_outputs/nohup.out 2>&1 &"
+        ),
+    },
 }
 
 
@@ -98,6 +127,57 @@ def copy_results_csvs(model_dir: Path, dest_dir: Path) -> None:
         print(f"no results.csv files found under: {model_dir}")
 
 
+def copy_run_artifacts(label: str, model_dir: Path, dest_dir: Path, repo_root: Path) -> None:
+    metadata = RUN_METADATA.get(label)
+    if metadata is None:
+        print(f"no run metadata configured for: {label}")
+        return
+
+    repro_dir = dest_dir / "repro"
+    repro_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_paths = []
+    for key in ["training_script", "training_config"]:
+        rel_path = Path(metadata[key])
+        src = repo_root / rel_path
+        if not src.exists():
+            print(f"configured {key} missing, skipping: {src}")
+            continue
+        target = repro_dir / rel_path.name
+        shutil.copy2(src, target)
+        copied_paths.append((key, target.relative_to(dest_dir)))
+        print(f"copied {key}: {src} -> {target}")
+
+    manifest = dest_dir / "training_manifest.md"
+    lines = [
+        f"# {label}",
+        "",
+        metadata["description"],
+        "",
+        f"- Model snapshot: `{model_dir}`",
+    ]
+    for key, rel_target in copied_paths:
+        label_text = key.replace("_", " ").title()
+        lines.append(f"- {label_text}: `{rel_target}`")
+    lines.extend(
+        [
+            "",
+            "## Example Launch",
+            "",
+            "```bash",
+            metadata["example_launch"],
+            "```",
+            "",
+            "The launch script enforces effective batch size 256 via "
+            "`NPROC_PER_NODE * BATCH_SIZE * GRAD_ACCUM` and records the exact "
+            "runtime overrides in its training log.",
+            "",
+        ]
+    )
+    manifest.write_text("\n".join(lines))
+    print(f"wrote training manifest: {manifest}")
+
+
 def parse_model_arg(value: str) -> tuple[str, Path]:
     if "=" not in value:
         raise argparse.ArgumentTypeError("model entries must look like label=/path/to/model")
@@ -110,7 +190,10 @@ def parse_model_arg(value: str) -> tuple[str, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Reorder summary.tsv files and collect nested results.csv files."
+        description=(
+            "Reorder summary.tsv files and collect nested results.csv files plus "
+            "training reproducibility artifacts."
+        )
     )
     parser.add_argument(
         "--model",
@@ -131,10 +214,16 @@ def main() -> None:
         action="store_true",
         help="Only collect results.csv files; do not rewrite summary.tsv ordering.",
     )
+    parser.add_argument(
+        "--no-run-artifacts",
+        action="store_true",
+        help="Do not copy training scripts/configs or write training manifests.",
+    )
 
     args = parser.parse_args()
     models = dict(args.model or [(k, expand_path(v)) for k, v in DEFAULT_MODELS.items()])
     out_root = expand_path(args.out_dir)
+    repo_root = Path(__file__).resolve().parents[1]
 
     for label, model_dir in models.items():
         if not model_dir.exists():
@@ -145,6 +234,8 @@ def main() -> None:
         if not args.no_reorder:
             reorder_summary(model_dir, dest_dir)
         copy_results_csvs(model_dir, dest_dir)
+        if not args.no_run_artifacts:
+            copy_run_artifacts(label, model_dir, dest_dir, repo_root)
 
     print(f"organized results root: {out_root}")
 
