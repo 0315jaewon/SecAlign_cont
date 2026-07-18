@@ -321,6 +321,9 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if self._default_attack_inner_steps <= 0:
             raise ValueError("attack_inner_steps must be positive.")
         self._attack_inner_steps = self._default_attack_inner_steps
+        self._attack_l2_radius = cfg.get("attack_l2_radius", None)
+        if self._attack_l2_radius is not None and self._attack_l2_radius <= 0:
+            raise ValueError("attack_l2_radius must be positive when provided.")
         self._attack_inner_steps_switch_step = cfg.get(
             "attack_inner_steps_switch_step", None
         )
@@ -851,6 +854,156 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
         if world_size == 1:
             return weight
         return self._to_local_tensor(weight)
+
+    def _project_attack_token_rows(
+        self, previous_rows: Optional[torch.Tensor] = None
+    ) -> Optional[Dict[str, torch.Tensor]]:
+        if self._attack_l2_radius is None:
+            return None
+
+        with torch.no_grad():
+            attack_param = self._get_live_attack_embedding()
+            attack_rows = attack_param[self._attack_token_ids]
+            initial_rows = self._initial_attack_embedding_rows.to(
+                device=attack_rows.device, dtype=torch.float32
+            )
+            active_mask = self._current_attack_active_mask.to(
+                device=attack_rows.device, dtype=torch.bool
+            )
+            if not active_mask.any():
+                zero = torch.zeros((), device=attack_rows.device)
+                return {
+                    "active_rows": zero,
+                    "projected_rows": zero,
+                    "boundary_rows": zero,
+                    "outward_rows": zero,
+                    "pre_max_norm": zero,
+                    "pre_median_norm": zero,
+                    "post_max_norm": zero,
+                    "post_median_norm": zero,
+                    "movement_median_norm": zero,
+                    "raw_radial_cosine_median": zero,
+                }
+
+            attack_rows_fp32 = attack_rows.float()
+            deltas = attack_rows_fp32 - initial_rows
+            pre_norms = deltas.norm(dim=1)
+            active_pre_norms = pre_norms[active_mask]
+
+            scales = torch.ones_like(pre_norms)
+            scales[active_mask] = torch.clamp(
+                self._attack_l2_radius
+                / active_pre_norms.clamp_min(torch.finfo(torch.float32).tiny),
+                max=1.0,
+            )
+            projected_rows = attack_rows_fp32.clone()
+            projected_rows[active_mask] = (
+                initial_rows[active_mask]
+                + deltas[active_mask] * scales[active_mask].unsqueeze(1)
+            )
+            attack_param[self._attack_token_ids] = projected_rows.to(attack_rows.dtype)
+
+            stored_rows = attack_param[self._attack_token_ids].float()
+            post_norms = (stored_rows - initial_rows).norm(dim=1)
+            for _ in range(3):
+                overshoot_mask = active_mask & (
+                    post_norms > self._attack_l2_radius
+                )
+                if not overshoot_mask.any():
+                    break
+                corrected_rows = stored_rows.clone()
+                corrected_deltas = stored_rows[overshoot_mask] - initial_rows[
+                    overshoot_mask
+                ]
+                correction_scales = (
+                    self._attack_l2_radius * 0.999
+                ) / post_norms[overshoot_mask].unsqueeze(1)
+                corrected_rows[overshoot_mask] = (
+                    initial_rows[overshoot_mask]
+                    + corrected_deltas * correction_scales
+                )
+                attack_param[self._attack_token_ids] = corrected_rows.to(
+                    attack_rows.dtype
+                )
+                stored_rows = attack_param[self._attack_token_ids].float()
+                post_norms = (stored_rows - initial_rows).norm(dim=1)
+            active_post_norms = post_norms[active_mask]
+
+            boundary_rows = torch.zeros((), device=attack_rows.device)
+            outward_rows = torch.zeros((), device=attack_rows.device)
+            movement_median_norm = torch.zeros((), device=attack_rows.device)
+            raw_radial_cosine_median = torch.zeros((), device=attack_rows.device)
+            if previous_rows is not None:
+                previous_rows_fp32 = previous_rows.to(
+                    device=attack_rows.device, dtype=torch.float32
+                )
+                previous_deltas = previous_rows_fp32 - initial_rows
+                previous_norms = previous_deltas.norm(dim=1)
+                boundary_mask = active_mask & (
+                    previous_norms >= self._attack_l2_radius * 0.99
+                )
+                boundary_rows = boundary_mask.sum().detach()
+                movement_norms = (stored_rows - previous_rows_fp32).norm(dim=1)
+                movement_median_norm = movement_norms[active_mask].median().detach()
+
+                if boundary_mask.any():
+                    raw_updates = attack_rows_fp32 - previous_rows_fp32
+                    radial_units = previous_deltas[boundary_mask] / previous_norms[
+                        boundary_mask
+                    ].unsqueeze(1).clamp_min(torch.finfo(torch.float32).tiny)
+                    boundary_updates = raw_updates[boundary_mask]
+                    update_norms = boundary_updates.norm(dim=1)
+                    radial_components = (boundary_updates * radial_units).sum(dim=1)
+                    outward_rows = (radial_components > 0).sum().detach()
+                    raw_radial_cosines = radial_components / update_norms.clamp_min(
+                        torch.finfo(torch.float32).tiny
+                    )
+                    raw_radial_cosine_median = raw_radial_cosines.median().detach()
+
+            return {
+                "active_rows": active_mask.sum().detach(),
+                "projected_rows": (
+                    active_pre_norms > self._attack_l2_radius
+                ).sum().detach(),
+                "boundary_rows": boundary_rows,
+                "outward_rows": outward_rows,
+                "pre_max_norm": active_pre_norms.max().detach(),
+                "pre_median_norm": active_pre_norms.median().detach(),
+                "post_max_norm": active_post_norms.max().detach(),
+                "post_median_norm": active_post_norms.median().detach(),
+                "movement_median_norm": movement_median_norm,
+                "raw_radial_cosine_median": raw_radial_cosine_median,
+            }
+
+    def _log_attack_projection_diagnostics(
+        self, inner_step: int, metrics: Optional[Dict[str, torch.Tensor]]
+    ) -> None:
+        if metrics is None or inner_step not in {
+            1,
+            5,
+            10,
+            self._attack_inner_steps,
+        }:
+            return
+
+        utils.log_rank_zero(
+            log,
+            "attacker_projection "
+            f"global_step={self.global_step} "
+            f"inner_step={inner_step}/{self._attack_inner_steps} "
+            f"radius={self._attack_l2_radius:.6f} "
+            f"active_rows={int(metrics['active_rows'].item())} "
+            f"projected_rows={int(metrics['projected_rows'].item())} "
+            f"boundary_rows={int(metrics['boundary_rows'].item())} "
+            f"outward_rows={int(metrics['outward_rows'].item())} "
+            f"pre_max_norm={metrics['pre_max_norm'].item():.6f} "
+            f"pre_median_norm={metrics['pre_median_norm'].item():.6f} "
+            f"post_max_norm={metrics['post_max_norm'].item():.6f} "
+            f"post_median_norm={metrics['post_median_norm'].item():.6f} "
+            f"movement_median_norm={metrics['movement_median_norm'].item():.6f} "
+            "raw_radial_cosine_median="
+            f"{metrics['raw_radial_cosine_median'].item():.6f}",
+        )
 
     def _mask_attack_token_logits(self, logits: torch.Tensor) -> torch.Tensor:
         if not self._enable_attack_tokens:
@@ -1810,7 +1963,20 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
                     attack_grad_norm = torch.tensor(float("nan"), device=self._device)
                 self._clear_defender_grads()
 
+                previous_attack_rows = None
+                if self._attack_l2_radius is not None:
+                    with torch.no_grad():
+                        previous_attack_rows = self._get_live_attack_embedding()[
+                            self._attack_token_ids
+                        ].detach().clone()
+
                 self._attacker_optimizer.step()
+                projection_metrics = self._project_attack_token_rows(
+                    previous_rows=previous_attack_rows
+                )
+                self._log_attack_projection_diagnostics(
+                    inner_step=_ + 1, metrics=projection_metrics
+                )
 
                 with torch.no_grad():
                     attack_param = self._get_attack_tensor_view(
