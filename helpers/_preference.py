@@ -124,6 +124,7 @@ class PreferenceDataset(Dataset):
             "suffix",
             "span_replacement",
             "random_injection_gaps",
+            "random_structural_boundary_block",
         }
         if attack_token_mode not in valid_attack_token_modes:
             raise ValueError(
@@ -305,6 +306,75 @@ class PreferenceDataset(Dataset):
 
         return prompt_tokenized, attack_init_token_ids, attack_active_mask
 
+    @staticmethod
+    def _find_structural_boundary_offsets(text: str) -> list[int]:
+        """Return character offsets that do not split lexical content."""
+        offsets = {0, len(text)}
+
+        for match in re.finditer(r"\n+", text):
+            offsets.add(match.end())
+
+        sentence_end = r'''[.!?]+["')\]]*(?=\s|$)'''
+        for match in re.finditer(sentence_end, text):
+            offsets.add(match.end())
+
+        return sorted(offsets)
+
+    def _build_random_structural_boundary_block_prompt(
+        self, prompt: str, rejected_input_whole: str
+    ) -> tuple[list[int], list[int], list[int]]:
+        span = self._find_rejected_span(prompt, rejected_input_whole)
+        if span is None:
+            raise ValueError(
+                "attack_token_mode='random_structural_boundary_block' requires "
+                "locating the rejected_input span in the prompt."
+            )
+
+        start, end = span
+        prefix_ids = self._tokenizer.encode(prompt[:start])
+        rejected_span = prompt[start:end]
+        span_ids = self._tokenizer.encode(rejected_span)
+        suffix_ids = self._tokenizer.encode(prompt[end:])
+        span_token_len = len(span_ids)
+
+        if self._attack_tokens_per_sample is None:
+            num_inserted = min(span_token_len, self._num_attack_tokens)
+        else:
+            num_inserted = min(
+                self._attack_tokens_per_sample, self._num_attack_tokens
+            )
+        num_inserted = min(num_inserted, self._num_attack_tokens)
+
+        if num_inserted > 0:
+            boundary_offsets = self._find_structural_boundary_offsets(rejected_span)
+            boundary_offset = int(np.random.choice(boundary_offsets))
+
+            if boundary_offset == 0:
+                token_gap = 0
+            elif boundary_offset == len(rejected_span):
+                token_gap = span_token_len
+            else:
+                token_gap = len(
+                    self._tokenizer.encode(rejected_span[:boundary_offset])
+                )
+                token_gap = min(token_gap, span_token_len)
+
+            attack_block = self._attack_token_ids[:num_inserted]
+            span_with_attacks = (
+                span_ids[:token_gap] + attack_block + span_ids[token_gap:]
+            )
+        else:
+            span_with_attacks = span_ids
+
+        prompt_tokenized = prefix_ids + span_with_attacks + suffix_ids
+
+        attack_init_token_ids = [0] * self._num_attack_tokens
+        attack_active_mask = [0] * self._num_attack_tokens
+        for idx in range(num_inserted):
+            attack_active_mask[idx] = 1
+
+        return prompt_tokenized, attack_init_token_ids, attack_active_mask
+
     def _prepare_sample(self, sample: Mapping[str, Any]) -> dict[str, list[int]]:
         prompt = sample["prompt"]
         rejected_input_whole = sample.get("rejected_input_whole")
@@ -336,6 +406,14 @@ class PreferenceDataset(Dataset):
                 attack_init_token_ids,
                 attack_active_mask,
             ) = self._build_span_replacement_prompt(prompt, rejected_input_whole)
+        elif self._attack_token_mode == "random_structural_boundary_block":
+            (
+                prompt_tokenized,
+                attack_init_token_ids,
+                attack_active_mask,
+            ) = self._build_random_structural_boundary_block_prompt(
+                prompt, rejected_input_whole
+            )
         else:
             (
                 prompt_tokenized,

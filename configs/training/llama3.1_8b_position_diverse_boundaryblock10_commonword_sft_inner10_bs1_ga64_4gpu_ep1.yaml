@@ -1,0 +1,94 @@
+output_dir: /tmp/secalign_runs/llama31_8b_position_diverse_boundaryblock10_commonword_sft_inner10_bs1_ga64_4gpu_epoch1
+cache_dir: /home/jaewonc/models/Meta-Llama-3.1-8B-Instruct
+num_attack_tokens: 10
+attack_token_prefix: "<ATTACK_"
+attack_token_mode: random_structural_boundary_block
+attack_tokens_per_sample: null
+attack_init_token: "!"
+attack_init_tokens: ["the", "and", "to", "of", "a", "in", "is", "for", "on", "with"]
+enable_attack_inner_loop: True
+attack_inner_steps: 10
+reset_attack_tokens_each_batch: True
+attacker_reference_free: False
+attacker_objective: sft_rejected
+log_attack_token_diagnostics: True
+
+model:
+  _component_: torchtune.models.llama3_1.lora_llama3_1_8b
+  lora_attn_modules: ['q_proj', 'v_proj']
+  apply_lora_to_mlp: True
+  apply_lora_to_output: False
+  lora_rank: 64
+  lora_alpha: 8
+  lora_dropout: 0.1
+
+tokenizer:
+  _component_: helpers.hf_tokenizer.HFLlamaTokenizer
+  path: ${cache_dir}
+  max_seq_len: 1024
+
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: ${cache_dir}/
+  checkpoint_files: [
+    model-00001-of-00004.safetensors,
+    model-00002-of-00004.safetensors,
+    model-00003-of-00004.safetensors,
+    model-00004-of-00004.safetensors
+  ]
+  recipe_checkpoint: null
+  output_dir: ${output_dir}
+  model_type: LLAMA3
+resume_from_checkpoint: False
+save_adapter_weights_only: True
+checkpoint_every_n_steps: 10
+checkpoint_keep_last_n_steps: 1
+
+dataset:
+  _component_: helpers._preference.preference_dataset
+  source: json
+  data_files: /home/jaewonc/SecAlign_cont/data/preference_Llama-3.1-8B-Instruct_dpo_NaiveCompletion_randpos_synthetic_alpaca.json
+  packed: False
+  split: train
+
+seed: null
+shuffle: True
+
+optimizer:
+  _component_: torch.optim.AdamW
+  fused: True
+  weight_decay: 0.0
+  lr: 0.00016
+attacker_optimizer:
+  _component_: torch.optim.AdamW
+  fused: True
+  weight_decay: 0.0
+  lr: 0.0005
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 0
+
+loss:
+  _component_: torchtune.rlhf.loss.DPOLoss
+
+epochs: 1
+batch_size: 1
+max_steps_per_epoch: null
+gradient_accumulation_steps: 64
+clip_grad_norm: null
+compile: False
+
+metric_logger:
+  _component_: torchtune.training.metric_logging.DiskLogger
+  log_dir: ${output_dir}/logs
+log_every_n_steps: 1
+log_peak_memory_stats: True
+log_level: INFO
+
+device: cuda
+dtype: bf16
+
+enable_activation_checkpointing: True
+enable_activation_offloading: False
+load_base_model_before_fsdp: True
+keep_attack_embedding_unsharded: True

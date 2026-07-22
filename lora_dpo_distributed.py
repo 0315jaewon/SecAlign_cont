@@ -303,6 +303,7 @@ class LoRADPORecipeDistributed(FTRecipeInterface):
             "suffix",
             "span_replacement",
             "random_injection_gaps",
+            "random_structural_boundary_block",
         }
         if self._attack_token_mode not in valid_attack_token_modes:
             raise ValueError(
